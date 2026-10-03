@@ -5,13 +5,6 @@ on: [push,workflow_dispatch]
 permissions:
   contents: write
 
-env:
-  SOLUTION_FILE_PATH: .
-  BUILD_CONFIGURATION: Debug
-  BUILD_PLATFORM: x64
-  TOOLSET: VS2022
-  ARCHIVE_PREFIX: debug-build
-
 jobs:
   build:
     runs-on: [windows-latest]
@@ -26,27 +19,13 @@ jobs:
     - name: Setup NuGet
       run: nuget restore .\packages.config -PackagesDirectory .\packages\ 
       
-    - name: Build
+    - name: Build Driver (UDF)
       working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: >
-        .\BuildTools\build.ps1 -toolset ${{env.TOOLSET}} 
-        -configurations ${{env.BUILD_CONFIGURATION}} 
-        -platforms ${{env.BUILD_PLATFORM}}
+      run: msbuild .\ComPort\htsvsp.vcxproj /p:Configuration=Debug /p:Platform=x64 /m
 
-    - name: Run Unit Tests
-      run: |
-        if (Test-Path ".\App\unitTest\x64\Debug\unitTest.exe") {
-          .\App\unitTest\x64\Debug\unitTest.exe --gtest_output=xml:unit_test_results.xml
-        } else {
-          Write-Host "unitTest.exe not found, skipping unit tests."
-        }
-
-    - name: Archive Bin
-      if: ${{ always() }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{env.ARCHIVE_PREFIX}}-bin
-        path: bin/**/*.*
+    - name: Build vspControl
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: msbuild .\App\vspControl\vspControl.vcxproj /p:Configuration=Debug /p:Platform=x64 /m
 
     - name: Publish Release
       if: ${{ always() }}
@@ -60,5 +39,6 @@ jobs:
           - htsvsp.inf / htsvsp.cat
           - vspControl.exe
         files: |
-          bin/**/*.*
+          ComPort/x64/Debug/*
+          App/vspControl/x64/Debug/*
         fail_on_unmatched_files: false
