@@ -1,0 +1,64 @@
+name: "Debug Build"
+
+on: [push,workflow_dispatch]
+
+permissions:
+  contents: write
+
+env:
+  SOLUTION_FILE_PATH: .
+  BUILD_CONFIGURATION: Debug
+  BUILD_PLATFORM: x64
+  TOOLSET: VS2022
+  ARCHIVE_PREFIX: debug-build
+
+jobs:
+  build:
+    runs-on: [windows-latest]
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with: 
+        submodules: 'true'
+        fetch-depth: 0
+        
+    - name: Setup NuGet
+      run: nuget restore .\packages.config -PackagesDirectory .\packages\ 
+      
+    - name: Build
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: >
+        .\BuildTools\build.ps1 -toolset ${{env.TOOLSET}} 
+        -configurations ${{env.BUILD_CONFIGURATION}} 
+        -platforms ${{env.BUILD_PLATFORM}}
+
+    - name: Run Unit Tests
+      run: |
+        if (Test-Path ".\App\unitTest\x64\Debug\unitTest.exe") {
+          .\App\unitTest\x64\Debug\unitTest.exe --gtest_output=xml:unit_test_results.xml
+        } else {
+          Write-Host "unitTest.exe not found, skipping unit tests."
+        }
+
+    - name: Archive Bin
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{env.ARCHIVE_PREFIX}}-bin
+        path: bin/**/*.*
+
+    - name: Publish Release
+      if: ${{ always() }}
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: debug-build-${{ github.run_number }}
+        name: Debug Build ${{ github.run_number }}
+        body: |
+          Automated debug build for WPF-VSPD integration.
+          - HtsVsp.dll (UDF user-mode serial driver)
+          - htsvsp.inf / htsvsp.cat
+          - vspControl.exe
+        files: |
+          bin/**/*.*
+        fail_on_unmatched_files: false
