@@ -1,0 +1,60 @@
+; vspd.inf - VSPD 虚拟串口驱动安装信息文件（KMDF 总线驱动）
+; 安装后：
+;   - 总线设备 Root\VSPDBUS 出现在「设备管理器 -> 端口(COM 和 LPT)」为 "VSPD Virtual Serial Bus"
+;   - 每个 COM 端口（子 PDO，硬件 ID VSPD\VPORT）同样出现在「端口」下，形如 "VSPD Virtual Port (COM10)"
+; 需经 inf2cat + 测试签名后在“测试签名模式”下安装（见 README.md / install.ps1）。
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = Ports
+ClassGuid   = {4D36E978-E325-11CE-BFC1-08002BE10318}
+Provider    = %Mfg%
+CatalogFile = vspd.cat
+DriverVer   = 10/04/2026,1.0.0.0
+
+[DestinationDirs]
+Vspd_CopyFiles = 12   ; %SystemRoot%\System32\drivers
+
+[SourceDisksNames]
+1 = %Disk%,,,""
+
+[SourceDisksFiles]
+vspd.sys = 1,,
+
+[Manufacturer]
+%Mfg% = Vspd, NTamd64
+
+[Vspd.NTamd64]
+; 总线 FDO（Root 枚举）
+%BusDesc%  = VspdBus_Install,  Root\VSPDBUS
+; 子端口 PDO（由驱动动态枚举；同一驱动作为函数驱动）
+%PortDesc% = VspdPort_Install, VSPD\VPORT
+
+[VspdBus_Install]
+CopyFiles = Vspd_CopyFiles
+
+[VspdPort_Install]
+CopyFiles = Vspd_CopyFiles
+
+[Vspd_CopyFiles]
+vspd.sys
+
+[VspdBus_Install.Services]
+AddService = vspd, 0x00000002, Vspd_Service_Inst
+
+[VspdPort_Install.Services]
+AddService = vspd, 0x00000002, Vspd_Service_Inst
+
+[Vspd_Service_Inst]
+DisplayName   = %SvcDesc%
+ServiceType  = 1           ; SERVICE_KERNEL_DRIVER
+StartType    = 3           ; SERVICE_DEMAND_START
+ErrorControl = 1
+ServiceBinary = %12%\vspd.sys
+
+[Strings]
+Mfg      = "VSPD"
+Disk     = "VSPD Virtual Serial Port Driver Disk"
+BusDesc  = "VSPD Virtual Serial Bus"
+PortDesc = "VSPD Virtual Serial Port"
+SvcDesc  = "VSPD Virtual Serial Port Driver"

@@ -1,0 +1,70 @@
+name: Build VSPD Kernel Driver (no local WDK needed)
+
+# 路径 1：无需在本机安装 WDK。
+# GitHub 的 windows-2022 / windows-latest Runner 已预装 WDK（22H2 / 10.0.26100）+ VS2022，
+# 因此直接 msbuild 即可，不需要手动提供 EWDK ISO 链接。
+#
+# 使用步骤：
+#   1) 把本仓库推送到 GitHub（含 .github/workflows/build-driver.yml）
+#   2) 仓库 Actions 页面 -> 选择 “Build VSPD Kernel Driver” -> Run workflow
+#   3) 构建完成后：
+#        - Artifacts 区可下载 vspd-driver.zip（vspd.sys + vspd.inf）
+#        - 同时自动发布到 GitHub Release（“VSPD Driver Build N”），附件即 vspd-driver.zip
+#   4) 下载解压到软件 Driver 目录，在软件内点「开启驱动」即可在设备管理器看到 COM
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'Vspd.Driver/**'
+      - '.github/workflows/build-driver.yml'
+
+permissions:
+  contents: write   # 创建 Release 需要
+
+jobs:
+  build-driver:
+    # windows-2022 预装 WDK 22H2；若想用更新的 WDK 可改为 windows-latest（Server 2025，WDK 10.0.26100）
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build vspd.sys (x64, Release)
+        shell: cmd
+        run: |
+          msbuild Vspd.Driver\vspd.vcxproj /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10
+
+      - name: Verify & package driver (zip)
+        shell: pwsh
+        run: |
+          $sys = "Vspd.Driver\x64\Release\vspd.sys"
+          if (-not (Test-Path $sys)) {
+            Write-Error "未找到 vspd.sys，驱动构建失败，请查看上方 msbuild 日志。"
+            exit 1
+          }
+          # 把 vspd.sys + vspd.inf 打包成 zip，便于下载与发布到 Release
+          Compress-Archive -Path $sys, "Vspd.Driver\vspd.inf" -DestinationPath vspd-driver.zip -Force
+          Write-Host "已打包：vspd-driver.zip"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vspd-driver
+          path: vspd-driver.zip
+
+      - name: Publish to GitHub Release (附件下载更方便)
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: vspd-driver-${{ github.run_number }}
+          name: VSPD Driver Build ${{ github.run_number }}
+          files: vspd-driver.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

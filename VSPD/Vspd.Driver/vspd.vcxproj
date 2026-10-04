@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  VSPD 内核驱动项目（KMDF）。在已安装 WDK 的“开发者命令提示符”或用 EWDK 执行：
+      msbuild vspd.vcxproj /p:Configuration=Release /p:Platform=x64
+  产物：vspd.sys（配合 vspd.inf 经测试签名后安装）。
+  本文件是标准 WDK 驱动工程：通过 PlatformToolset=WindowsKernelModeDriver10.0 自动导入 WDK 工具链，
+  无需手动引用 WDK.Wdk.props。GitHub Actions 的 windows-2022 / windows-latest runner 已预装 WDK。
+-->
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <ProjectGuid>{A1B2C3D4-0001-4A1A-9C3D-00000000000A}</ProjectGuid>
+    <RootNamespace>vspd</RootNamespace>
+    <ProjectType>Driver</ProjectType>
+    <TargetVersion>Windows10</TargetVersion>
+    <MinimumVisualStudioVersion>16.0</MinimumVisualStudioVersion>
+    <Configuration Condition="'$(Configuration)'==''">Debug</Configuration>
+    <Platform Condition="'$(Platform)'==''">x64</Platform>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Label="Globals">
+    <TargetVersion>Windows10</TargetVersion>
+    <KmdfVersion>1.33</KmdfVersion>
+    <DriverType>KMDF</DriverType>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <!-- 内核驱动工具集：自动导入 WDK 的 props/targets，使 ntoskrnl/serial 等头库可用 -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverTargetPlatform>Universal</DriverTargetPlatform>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverTargetPlatform>Universal</DriverTargetPlatform>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <TargetVersion>Windows10</TargetVersion>
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(DDK_LIB_PATH)ntoskrnl.lib;$(DDK_LIB_PATH)hal.lib;$(DDK_LIB_PATH)wmilib.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <ClCompile Include="driver.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <Inf Include="vspd.inf" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

@@ -1,0 +1,23 @@
+{
+  "defaultBaudRate": 115200,
+  "pairs": [
+    {
+      "nameA": "COM10",
+      "nameB": "COM11",
+      "baudRate": 115200,
+      "dataBits": 8,
+      "stopBits": "One",
+      "parity": "None",
+      "flowControl": "None"
+    },
+    {
+      "nameA": "COM12",
+      "nameB": "COM13",
+      "baudRate": 9600,
+      "dataBits": 8,
+      "stopBits": "One",
+      "parity": "Even",
+      "flowControl": "Hardware"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+# ---- .NET / MSBuild ----
+**/bin/
+**/obj/
+*.user
+.vs/
+
+# ---- WorkBuddy 本地记忆（非项目源码）----
+.workbuddy/
+
+# ---- 驱动构建产物（由 CI 重新生成）----
+Vspd.Driver/x64/
+Vspd.Driver/WinDDK/
+*.sys

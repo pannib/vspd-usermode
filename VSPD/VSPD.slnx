@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="VSPD/VSPD.csproj" />
+  <Project Path="Vspd.Core/Vspd.Core.csproj" />
+  <Project Path="Vspd.Service/Vspd.Service.csproj" />
+  <Project Path="Vspd.Tests/Vspd.Tests.csproj" />
+  <Project Path="Vspd.Bus/Vspd.Bus.csproj" />
+</Solution>
