@@ -7,6 +7,16 @@
   无需手动引用 WDK.Wdk.props。GitHub Actions 的 windows-2022 / windows-latest runner 已预装 WDK。
 -->
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
   <PropertyGroup>
     <ProjectGuid>{A1B2C3D4-0001-4A1A-9C3D-00000000000A}</ProjectGuid>
     <RootNamespace>vspd</RootNamespace>

@@ -175,7 +175,8 @@ VOID VspdEvtChildListCreateDevice(
     NTSTATUS status;
 
     // 子设备硬件 ID，INF 据此匹配 VSPD\VPORT 并加载同一驱动（Class=Ports）
-    WdfPdoInitAddHardwareId(DeviceInit, L"VSPD\\VPORT");
+    DECLARE_CONST_UNICODE_STRING(hwId, L"VSPD\\VPORT");
+    WdfPdoInitAddHardwareId(DeviceInit, &hwId);
     WdfDeviceInitSetIoType(DeviceInit, WdfDeviceIoBuffered);
 
     WDF_OBJECT_ATTRIBUTES attrs;
