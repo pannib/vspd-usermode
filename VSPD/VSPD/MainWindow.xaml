@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:VSPD"
-        Title="VSPD - 虚拟串口驱动" Height="660" Width="920">
+        Title="VSPD - 虚拟串口" Height="680" Width="940">
   <DockPanel>
     <Menu DockPanel.Dock="Top">
       <MenuItem Header="文件">
@@ -18,27 +18,27 @@
 
     <Grid>
       <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="300"/>
+        <ColumnDefinition Width="320"/>
         <ColumnDefinition Width="*"/>
       </Grid.ColumnDefinitions>
 
       <StackPanel Grid.Column="0" Margin="6">
-        <GroupBox Header="驱动管理（真实 COM 端口）" Margin="0,0,0,6">
+        <GroupBox Header="驱动（真实 COM 端口，出现在设备管理器）" Margin="0,0,0,6">
           <StackPanel Margin="4">
             <StackPanel Orientation="Horizontal">
               <Button x:Name="BtnEnableDriver" Content="开启驱动" Click="BtnEnableDriver_Click" Margin="2" Padding="8,2"/>
               <Button x:Name="BtnDisableDriver" Content="关闭驱动" Click="BtnDisableDriver_Click" Margin="2" Padding="8,2"/>
             </StackPanel>
-            <TextBlock x:Name="DriverStateText" Text="驱动状态：检测中…" Margin="2,4" FontWeight="Bold"/>
+            <TextBlock x:Name="DriverStateText" Text="驱动状态：检测中…" Margin="2,4" FontWeight="Bold" TextWrapping="Wrap"/>
             <CheckBox x:Name="ChkAutoStop" Content="退出时自动关闭驱动（保护机制）" IsChecked="True" Margin="2"/>
           </StackPanel>
         </GroupBox>
 
-        <GroupBox Header="虚拟串口对" Margin="0">
+        <GroupBox Header="虚拟串口对（立即可用，无需驱动）" Margin="0">
           <DockPanel>
             <StackPanel DockPanel.Dock="Top" Orientation="Horizontal">
-              <Button x:Name="BtnAdd" Content="新增真实端口" Click="AddPair_Click" Margin="2"/>
-              <Button x:Name="BtnRemove" Content="移除选中" Click="RemovePair_Click" Margin="2"/>
+              <Button x:Name="BtnAdd" Content="新增一对" Click="BtnAdd_Click" Margin="2"/>
+              <Button x:Name="BtnRemove" Content="移除选中" Click="BtnRemove_Click" Margin="2"/>
               <Button x:Name="BtnUnplug" Content="模拟拔插" Click="Unplug_Click" Margin="2"/>
             </StackPanel>
             <ListBox x:Name="PairList" Margin="2" SelectionChanged="PairList_SelectionChanged"/>
@@ -46,7 +46,7 @@
         </GroupBox>
       </StackPanel>
 
-      <GroupBox Header="收发测试" Grid.Column="1" Margin="6">
+      <GroupBox Header="收发测试（选中一对后即可双向收发）" Grid.Column="1" Margin="6">
         <Grid>
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -54,13 +54,14 @@
             <RowDefinition Height="*"/>
           </Grid.RowDefinitions>
 
-          <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4">
+          <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4" TextBlock.FontSize="12">
             <TextBlock Text="选中：" VerticalAlignment="Center"/>
             <TextBlock x:Name="SelPair" Text="(无)" FontWeight="Bold" Margin="4,0"/>
             <TextBlock Text="波特率：" VerticalAlignment="Center" Margin="8,0,0,0"/>
             <TextBlock x:Name="SelBaud" Text="-" Margin="2,0"/>
             <TextBlock Text="流控：" VerticalAlignment="Center" Margin="8,0,0,0"/>
             <TextBlock x:Name="SelFlow" Text="-" Margin="2,0"/>
+            <Button x:Name="BtnLoopback" Content="一键回环自测" Click="BtnLoopback_Click" Margin="12,0,0,0" Padding="8,2"/>
           </StackPanel>
 
           <Grid Grid.Row="1" Margin="4">
@@ -68,13 +69,13 @@
               <ColumnDefinition Width="*"/>
               <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
-            <GroupBox Header="发送到 A（从 B 收）" Grid.Column="0" Margin="2">
+            <GroupBox Header="向 A 写入（将从 B 收到）" Grid.Column="0" Margin="2">
               <StackPanel>
                 <TextBox x:Name="SendA" Height="60" AcceptsReturn="True" TextWrapping="Wrap" Margin="2"/>
                 <Button Content="发送 A → B" Click="SendA_Click" Margin="2"/>
               </StackPanel>
             </GroupBox>
-            <GroupBox Header="发送到 B（从 A 收）" Grid.Column="1" Margin="2">
+            <GroupBox Header="向 B 写入（将从 A 收到）" Grid.Column="1" Margin="2">
               <StackPanel>
                 <TextBox x:Name="SendB" Height="60" AcceptsReturn="True" TextWrapping="Wrap" Margin="2"/>
                 <Button Content="发送 B → A" Click="SendB_Click" Margin="2"/>
@@ -82,7 +83,7 @@
             </GroupBox>
           </Grid>
 
-          <GroupBox Header="接收日志" Grid.Row="2" Margin="4">
+          <GroupBox Header="接收与日志" Grid.Row="2" Margin="4">
             <TextBox x:Name="Log" IsReadOnly="True" VerticalScrollBarVisibility="Auto"
                      FontFamily="Consolas" TextWrapping="Wrap"/>
           </GroupBox>

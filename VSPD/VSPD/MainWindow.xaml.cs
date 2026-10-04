@@ -15,11 +15,11 @@ namespace VSPD;
 public partial class MainWindow : Window
 {
     private readonly VspdService _svc = new();
-    private readonly VspdBusController _bus = new();
     private readonly DriverManager _dm = new();
     private readonly string _configPath;
     private VirtualPortPair? _selected;
     private CancellationTokenSource? _cts;
+    private int _nextCom = 20;
 
     public MainWindow()
     {
@@ -34,8 +34,15 @@ public partial class MainWindow : Window
                 _dm.StopBestEffort();
         };
 
+        // 启动即打开所有配置端口并选中第一对，让收发测试立即可用
+        OpenAllPairs();
+        if (_svc.Pairs.Count > 0)
+            PairList.SelectedIndex = 0;
+
         _ = RefreshDriverStateAsync();
     }
+
+    // ---------- 配置 / 端口生命周期 ----------
 
     private void LoadConfig()
     {
@@ -53,8 +60,18 @@ public partial class MainWindow : Window
         }
 
         _svc.LoadFromConfig(_configPath);
+        _nextCom = _svc.Pairs.Count * 2 + 10;
         RefreshList();
-        LogLine("已加载配置：" + _configPath);
+        LogLine("已加载配置：" + _configPath + "（已自动打开，可直接收发）");
+    }
+
+    private void OpenAllPairs()
+    {
+        foreach (var p in _svc.Pairs)
+        {
+            try { if (!p.PortA.IsOpen) p.Open(); }
+            catch (Exception ex) { LogLine("打开端口失败：" + ex.Message); }
+        }
     }
 
     private void RefreshList()
@@ -67,10 +84,13 @@ public partial class MainWindow : Window
     private void ReloadConfig_Click(object sender, RoutedEventArgs e)
     {
         StopReaders();
-        _svc.Dispose();
+        try { _svc.Dispose(); } catch { }
         _svc.LoadFromConfig(_configPath);
+        _nextCom = _svc.Pairs.Count * 2 + 10;
+        OpenAllPairs();
         RefreshList();
-        LogLine("已重新加载配置。");
+        PairList.SelectedIndex = _svc.Pairs.Count > 0 ? 0 : -1;
+        LogLine("已重新加载配置并打开端口。");
     }
 
     private void SaveConfig_Click(object sender, RoutedEventArgs e)
@@ -79,43 +99,43 @@ public partial class MainWindow : Window
         LogLine("配置已保存：" + _configPath);
     }
 
-    private async void AddPair_Click(object sender, RoutedEventArgs e)
+    // ---------- 新增 / 移除 / 拔插（进程内，立即生效）----------
+
+    private void BtnAdd_Click(object sender, RoutedEventArgs e)
     {
-        // 驱动模式下：直接让内核驱动创建“真实 COM 端口对”，即时出现在设备管理器
-        if (DriverManager.IsDriverPresent())
-        {
-            ushort a = NextFreeCom();
-            ushort b = (ushort)(a + 1);
-            if (_bus.CreatePair(a, b))
-            {
-                RefreshDeviceManager();
-                LogLine($"已通过驱动新增真实端口：COM{a} ⇄ COM{b}（可在设备管理器查看并直接被任意串口程序打开）");
-            }
-            else
-            {
-                LogLine("驱动新增失败：请先点击「开启驱动」并确保驱动已运行。");
-            }
-            return;
-        }
+        ushort a = (ushort)_nextCom;
+        ushort b = (ushort)(_nextCom + 1);
+        _nextCom += 2;
 
-        if (await _dm.GetStateAsync() == DriverState.Running)
-        {
-            // 控制通道尚不可用，稍后重试一次
-            await Task.Delay(500);
-            AddPair_Click(sender, e);
-            return;
-        }
+        var cfg = new PortPairConfig { NameA = "COM" + a, NameB = "COM" + b, BaudRate = 115200 };
+        var pair = _svc.AddPair(cfg);
+        try { pair.Open(); } catch (Exception ex) { LogLine("打开新增端口失败：" + ex.Message); }
 
-        // 驱动未运行：提示先开启驱动（或回退到进程内模式验证）
-        LogLine("真实驱动尚未开启。请先点击上方「开启驱动」按钮；或直接体验进程内模式。");
-        int n = _svc.Pairs.Count * 2 + 10;
-        var cfg = new PortPairConfig { NameA = "COM" + n, NameB = "COM" + (n + 1), BaudRate = 115200 };
-        _svc.AddPair(cfg);
         RefreshList();
-        LogLine($"已新增一对（进程内回退验证）：{cfg.NameA} ⇄ {cfg.NameB}");
+        PairList.SelectedIndex = _svc.Pairs.Count - 1;
+        LogLine($"已新增一对（进程内，立即可用）：COM{a} ⇄ COM{b}");
     }
 
-    // ---------- 驱动生命周期（开启/关闭/状态/退出保护）----------
+    private void BtnRemove_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selected == null) { LogLine("请先选择一对串口。"); return; }
+        StopReaders();
+        try { _selected.Close(); } catch { }
+        _svc.RemovePair(_selected);
+        _selected = null;
+        RefreshList();
+        LogLine("已移除选中串口对。");
+    }
+
+    private void Unplug_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selected == null) { LogLine("请先选择一对串口。"); return; }
+        _selected.Unplug();
+        LogLine($"已模拟拔插：{_selected.PortA.PortName} / {_selected.PortB.PortName}（此后读写将抛 PortRemovedException）");
+        RefreshList();
+    }
+
+    // ---------- 驱动生命周期（真实 COM 端口）----------
 
     private async Task RefreshDriverStateAsync()
     {
@@ -125,31 +145,23 @@ public partial class MainWindow : Window
             return;
         }
         var state = await _dm.GetStateAsync();
-        string txt = state switch
+        DriverStateText.Text = state switch
         {
             DriverState.Running => "驱动状态：● 已开启（真实 COM 端口可见）",
-            DriverState.InstalledStopped => "驱动状态：○ 已安装但未开启",
-            DriverState.PackageMissing => "驱动状态：✕ 未找到驱动包（请用 CI 构建 vspd.sys 放入 Driver 目录）",
+            DriverState.InstalledStopped => "驱动状态：○ 已安装但未开启（点“开启驱动”）",
+            DriverState.PackageMissing => "驱动状态：✕ 未找到驱动包（见说明：用 CI 构建 vspd.sys 放入 Driver 目录）",
             _ => "驱动状态：？ 未知"
         };
-        DriverStateText.Text = txt;
         if (state == DriverState.Running)
             StatusText.Text = "驱动模式：真实 COM 端口（设备管理器可见）";
     }
 
     private async void BtnEnableDriver_Click(object sender, RoutedEventArgs e)
     {
-        if (!DriverManager.IsAdministrator())
-        {
-            LogLine("开启驱动需要管理员权限：请右键“以管理员身份运行”本程序。");
-            return;
-        }
-        LogLine("正在开启驱动（安装并启动内核驱动）…");
+        LogLine("正在开启驱动（将以管理员身份提权安装并启动内核驱动，请允许 UAC）…");
         var (outcome, msg) = await _dm.EnableAsync();
         LogLine("开启结果：" + msg);
         await RefreshDriverStateAsync();
-        if (outcome == EnableOutcome.Started || outcome == EnableOutcome.AlreadyRunning)
-            RefreshDeviceManager();
     }
 
     private async void BtnDisableDriver_Click(object sender, RoutedEventArgs e)
@@ -160,46 +172,7 @@ public partial class MainWindow : Window
         await RefreshDriverStateAsync();
     }
 
-    /// <summary>从当前已占用的 COM 号之后找一个空闲端口号作为新增对的起点。</summary>
-    private static ushort NextFreeCom()
-    {
-        // 简单策略：从 20 开始顺延，避开默认 10/11/12/13
-        for (ushort c = 20; c < 250; c += 2)
-        {
-            if (!File.Exists($@"\\.\COM{c}") && !File.Exists($@"\\.\COM{(c + 1)}"))
-                return c;
-        }
-        return 20;
-    }
-
-    private void RefreshDeviceManager()
-    {
-        // 列出驱动当前管理的所有真实端口，便于核对
-        try
-        {
-            var ports = _bus.EnumPorts();
-            if (ports.Length > 0)
-                LogLine("驱动当前端口：" + string.Join(", ", ports.Select(p => p.Name)));
-        }
-        catch { /* 枚举失败不影响新增结果 */ }
-    }
-
-    private void RemovePair_Click(object sender, RoutedEventArgs e)
-    {
-        if (_selected == null) return;
-        StopReaders();
-        _svc.RemovePair(_selected);
-        _selected = null;
-        RefreshList();
-    }
-
-    private void Unplug_Click(object sender, RoutedEventArgs e)
-    {
-        if (_selected == null) return;
-        _selected.Unplug();
-        LogLine($"已模拟拔插：{_selected.PortA.PortName} / {_selected.PortB.PortName}");
-        RefreshList();
-    }
+    // ---------- 选中 / 收发 / 读取线程 ----------
 
     private void PairList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -212,7 +185,9 @@ public partial class MainWindow : Window
             SelPair.Text = $"{_selected.PortA.PortName} ⇄ {_selected.PortB.PortName}";
             SelBaud.Text = _selected.Config.BaudRate.ToString();
             SelFlow.Text = _selected.Config.FlowControl.ToString();
+            if (!_selected.PortA.IsOpen) { try { _selected.Open(); } catch { } }
             StartReaders(_selected);
+            LogLine($"已选中 {SelPair.Text}，开始监听双向数据。");
         }
         else
         {
@@ -229,7 +204,7 @@ public partial class MainWindow : Window
         try
         {
             _selected.PortA.Write(bytes, 0, bytes.Length);
-            LogLine($"[A→B] {SendA.Text}");
+            LogLine($"[发送 A→B] {SendA.Text}");
         }
         catch (Exception ex) { LogLine("发送失败：" + ex.Message); }
     }
@@ -241,9 +216,26 @@ public partial class MainWindow : Window
         try
         {
             _selected.PortB.Write(bytes, 0, bytes.Length);
-            LogLine($"[B→A] {SendB.Text}");
+            LogLine($"[发送 B→A] {SendB.Text}");
         }
         catch (Exception ex) { LogLine("发送失败：" + ex.Message); }
+    }
+
+    private void BtnLoopback_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selected == null) { LogLine("请先选择一对串口。"); return; }
+        var stamp = DateTime.Now.ToString("HH:mm:ss.fff");
+        var msgA = $"LOOP-A-{stamp}";
+        var msgB = $"LOOP-B-{stamp}";
+        try
+        {
+            var ba = Encoding.UTF8.GetBytes(msgA);
+            var bb = Encoding.UTF8.GetBytes(msgB);
+            _selected.PortA.Write(ba, 0, ba.Length);
+            _selected.PortB.Write(bb, 0, bb.Length);
+            LogLine($"[回环自测] 已向 A 写 “{msgA}”、向 B 写 “{msgB}”，若下方收到则说明双向收发正常。");
+        }
+        catch (Exception ex) { LogLine("回环自测失败：" + ex.Message); }
     }
 
     private void StartReaders(VirtualPortPair pair)
@@ -252,8 +244,9 @@ public partial class MainWindow : Window
         var tok = _cts.Token;
         pair.PortA.ReadTimeout = 200;
         pair.PortB.ReadTimeout = 200;
-        Task.Run(() => ReaderLoop(pair.PortB, pair.PortA.PortName + "→A", tok));
-        Task.Run(() => ReaderLoop(pair.PortA, pair.PortB.PortName + "→B", tok));
+        // 从 B 读出 = 来自 A 的数据（标 A→B）；从 A 读出 = 来自 B 的数据（标 B→A）
+        Task.Run(() => ReaderLoop(pair.PortB, $"{pair.PortA.PortName}→{pair.PortB.PortName}", tok));
+        Task.Run(() => ReaderLoop(pair.PortA, $"{pair.PortB.PortName}→{pair.PortA.PortName}", tok));
     }
 
     private void ReaderLoop(VirtualPort src, string label, CancellationToken tok)
@@ -265,13 +258,14 @@ public partial class MainWindow : Window
             {
                 int n = src.Read(buf, 0, buf.Length);
                 if (n > 0)
-                    LogLine($"[{label}] " + Encoding.UTF8.GetString(buf, 0, n));
+                    LogLine($"[{label}] {Encoding.UTF8.GetString(buf, 0, n)}");
             }
             catch (PortRemovedException)
             {
-                LogLine($"[{label}] 端口已移除。");
+                LogLine($"[{label}] 端口已移除，停止监听。");
                 break;
             }
+            catch (TimeoutException) { /* 无数据，继续轮询 */ }
             catch (Exception) when (!tok.IsCancellationRequested) { /* 关闭时忽略 */ }
         }
     }
@@ -284,13 +278,15 @@ public partial class MainWindow : Window
 
     private void Help_Click(object sender, RoutedEventArgs e)
     {
-        LogLine("使用方法：");
-        LogLine("1) 先点「开启驱动」：程序会以管理员身份安装并启动内核驱动，端口立即出现在设备管理器 → 端口(COM 和 LPT)。");
-        LogLine("2) 点「新增真实端口」：通过驱动创建一对 COM（如 COM10⇄COM11），可用任意串口工具互发验证。");
-        LogLine("3) 不再需要时点「关闭驱动」：停止内核驱动服务，端口移除。");
-        LogLine("退出保护：默认勾选“退出时自动关闭驱动”，关闭程序时会自动把驱动关掉，避免残留。");
-        LogLine("若「开启驱动」提示未找到驱动包：请在 Driver 目录放入 vspd.sys + vspd.inf（可用仓库 .github/workflows 的 CI 自动构建，无需本地 WDK）。");
-        LogLine("选中一对串口后，在右侧输入文本并点击发送即可验证双向收发；“模拟拔插”会把选中串口置为已移除。");
+        LogLine("=== 如何使用 ===");
+        LogLine("1) 软件启动后已自动打开默认串口对（COM10⇄COM11 等），左侧选中一对即可在右侧收发。");
+        LogLine("2) 在“向 A 写入”框输入文字点“发送 A→B”，数据会从 B 端收到并显示在日志（反之亦然）。");
+        LogLine("3) “一键回环自测”会同时向两端写入带时间戳的测试串，验证双向收发是否正常。");
+        LogLine("4) “新增一对”会创建进程内虚拟串口（立即生效，无需任何驱动）。");
+        LogLine("5) 想让端口出现在「设备管理器 → 端口(COM 和 LPT)」被任意串口工具打开：需内核驱动。");
+        LogLine("   → 点「开启驱动」（需管理员）：安装并启动 vspd 内核驱动；用 .github/workflows 的 CI 构建 vspd.sys 放入 Driver 目录即可，无需本地 WDK。");
+        LogLine("6) 「关闭驱动」停止内核驱动；退出程序默认自动关闭驱动（保护机制）。");
+        LogLine("7) “模拟拔插”会把选中端口置为已移除，此后读写将抛 PortRemovedException，用于异常测试。");
     }
 
     private void LogLine(string s)
