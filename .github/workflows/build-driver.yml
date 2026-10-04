@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   build-driver:
-    # windows-2022 预装 WDK 22H2；若想用更新的 WDK 可改为 windows-latest（Server 2025，WDK 10.0.26100）
+    # windows-2022 默认未预装 WDK；先安装 Windows Driver Kit(VS 组件)，再编译内核驱动
     runs-on: windows-2022
 
     steps:
@@ -33,6 +33,22 @@ jobs:
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
+
+      - name: Install Windows Driver Kit (WDK) into Visual Studio
+        shell: pwsh
+        run: |
+          $installer = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vs_installer.exe'
+          if (-not (Test-Path $installer)) { Write-Error "vs_installer.exe not found"; exit 1 }
+          Write-Host "Installing WDK component (Microsoft.VisualStudio.Component.WDK) ..."
+          $p = Start-Process -FilePath $installer -ArgumentList @(
+            'modify',
+            '--installPath', 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise',
+            '--add', 'Microsoft.VisualStudio.Component.WDK',
+            '--quiet', '--norestart', '--wait'
+          ) -Wait -PassThru
+          Write-Host "vs_installer exit code: $($p.ExitCode)"
+          $toolset = 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0'
+          if (Test-Path $toolset) { Write-Host "WDK toolset present: OK" } else { Write-Error "WDK toolset NOT found after install"; exit 1 }
 
       - name: Build vspd.sys (x64, Release)
         shell: cmd
