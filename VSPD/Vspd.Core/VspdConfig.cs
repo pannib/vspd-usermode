@@ -47,6 +47,13 @@ public sealed class VspdConfig
     /// <summary>虚拟串口对列表。每对生成两个互相桥接的端口。</summary>
     public List<PortPairConfig> Pairs { get; set; } = new();
 
+    /// <summary>
+    /// GitHub 仓库名（owner/repo）。设置后，若本地缺驱动包，「开启驱动」会自动从
+    /// 该仓库 Release 下载 vspd-driver.zip（免去手动下载/复制）。推送到 GitHub 并跑一次
+    /// .github/workflows/build-driver.yml 后即生效。
+    /// </summary>
+    public string DriverPackageRepo { get; set; } = "";
+
     public static VspdConfig Load(string path)
     {
         if (!File.Exists(path))

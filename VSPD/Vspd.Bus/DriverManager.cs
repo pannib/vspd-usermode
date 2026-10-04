@@ -1,7 +1,9 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
+using System.Net.Http;
 using System.Runtime.Versioning;
 using System.Security.Principal;
 using System.Text;
@@ -56,9 +58,19 @@ public sealed class DriverManager
     /// <summary>驱动包所在目录（包含 vspd.sys 与 vspd.inf）。可在构造时指定。</summary>
     public string PackageDir { get; }
 
-    public DriverManager(string? packageDir = null)
+    /// <summary>
+    /// GitHub 仓库名（owner/repo）。设置后，若本地缺驱动包，「开启驱动」会尝试自动从
+    /// 该仓库的 Release（vspd-driver.zip）下载，免去手动下载/复制。
+    /// </summary>
+    public string? PackageRepo { get; set; }
+
+    /// <summary>进度回调（用于 UI 显示“正在下载/安装”等）。</summary>
+    public Action<string>? OnProgress { get; set; }
+
+    public DriverManager(string? packageDir = null, string? packageRepo = null)
     {
         PackageDir = ResolvePackageDir(packageDir);
+        PackageRepo = packageRepo;
     }
 
     /// <summary>驱动包是否齐备（vspd.sys + vspd.inf 均存在）。</summary>
@@ -131,10 +143,28 @@ public sealed class DriverManager
         if (IsDriverPresent())
             return (EnableOutcome.AlreadyRunning, "驱动已在运行。");
 
-        var script = BuildEnableScript(PackageDir);
-        var (ok, detail) = await RunElevatedPowerShell(script).ConfigureAwait(false);
+        // 本地缺驱动包时，若配置了仓库则自动下载（用户只需推一次代码 + 跑 CI）
+        if (!PackagePresent)
+        {
+            if (!string.IsNullOrWhiteSpace(PackageRepo))
+            {
+                OnProgress?.Invoke("本地未找到驱动包，尝试从 GitHub Release 自动下载…");
+                var (ok, msg) = await TryAcquirePackageAsync().ConfigureAwait(false);
+                OnProgress?.Invoke("自动下载：" + msg);
+                if (!ok)
+                    return (EnableOutcome.PackageMissing, msg + $"（仓库：{PackageRepo}，目录：{PackageDir}）");
+            }
+            else
+            {
+                return (EnableOutcome.PackageMissing,
+                    $"未找到驱动包（需要 vspd.sys 与 vspd.inf）。目录：{PackageDir}；可在 vspd.json 配置 driverPackageRepo 后自动下载。");
+            }
+        }
 
-        if (!ok)
+        var script = BuildEnableScript(PackageDir);
+        var (ok2, detail) = await RunElevatedPowerShell(script).ConfigureAwait(false);
+
+        if (!ok2)
             return (EnableOutcome.Failed, detail);
 
         return detail switch
@@ -147,6 +177,37 @@ public sealed class DriverManager
                 => (EnableOutcome.Failed, detail[6..].Trim()),
             _ => (EnableOutcome.Failed, "未知返回：" + detail)
         };
+    }
+
+    /// <summary>
+    /// 从 GitHub Release 下载驱动包（vspd-driver.zip）并解压到 <see cref="PackageDir"/>。
+    /// 仅当 <see cref="PackageRepo"/> 非空且本地缺包时调用。
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    public async Task<(bool Ok, string Message)> TryAcquirePackageAsync()
+    {
+        if (string.IsNullOrWhiteSpace(PackageRepo))
+            return (false, "未配置驱动包仓库（driverPackageRepo）。");
+        if (PackagePresent) return (true, "驱动包已存在。");
+
+        var url = $"https://github.com/{PackageRepo.Trim('/')}/releases/latest/download/vspd-driver.zip";
+        try
+        {
+            Directory.CreateDirectory(PackageDir);
+            var zip = Path.Combine(Path.GetTempPath(), "vspd-driver.zip");
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
+            var data = await http.GetByteArrayAsync(url).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(zip, data).ConfigureAwait(false);
+            ZipFile.ExtractToDirectory(zip, PackageDir, overwriteFiles: true);
+            File.Delete(zip);
+            return PackagePresent
+                ? (true, "已从 GitHub Release 下载并解压驱动包。")
+                : (false, "下载完成但缺少 vspd.sys/vspd.inf。");
+        }
+        catch (Exception ex)
+        {
+            return (false, "自动下载驱动包失败：" + ex.Message);
+        }
     }
 
     /// <summary>
@@ -236,10 +297,16 @@ public sealed class DriverManager
         sb.AppendLine("  $inf = Join-Path $base 'vspd.inf'");
         sb.AppendLine("  $sys = Join-Path $base 'vspd.sys'");
         sb.AppendLine("  if (!(Test-Path $sys) -or !(Test-Path $inf)) { Out-Result 'PACKAGE_NOT_FOUND'; exit 0 }");
-        // 测试签名检测
+        // 测试签名：若未开启则开启（需重启后生效）；已开启则继续安装
         sb.AppendLine("  $ts = (bcdedit /enum | Out-String)");
-        sb.AppendLine("  if ($ts -notmatch 'testsigning') { Out-Result 'REBOOT_REQUIRED'; exit 0 }");
+        sb.AppendLine("  if ($ts -notmatch 'testsigning') { bcdedit /set testsigning on | Out-Null; Out-Result 'REBOOT_REQUIRED'; exit 0 }");
         sb.AppendLine("  if ($ts -notmatch 'On') { bcdedit /set testsigning on | Out-Null; Out-Result 'REBOOT_REQUIRED'; exit 0 }");
+        // 导入仓库内置的测试证书到本机根/受信任发布者（测试签名驱动加载所必需）
+        sb.AppendLine("  $cer = Join-Path $base 'vspd-test.cer'");
+        sb.AppendLine("  if (Test-Path $cer) {");
+        sb.AppendLine("    Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\\LocalMachine\\Root' | Out-Null");
+        sb.AppendLine("    Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\\LocalMachine\\TrustedPublisher' | Out-Null");
+        sb.AppendLine("  }");
         // 安装并启动
         sb.AppendLine("  pnputil /add-driver \"$inf\" /install | Out-Null");
         sb.AppendLine("  $svc = Get-Service -Name vspd -ErrorAction SilentlyContinue");

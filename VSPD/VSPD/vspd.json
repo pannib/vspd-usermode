@@ -1,5 +1,6 @@
 {
   "defaultBaudRate": 115200,
+  "driverPackageRepo": "你的GitHub用户名/VSPD",
   "pairs": [
     {
       "nameA": "COM10",

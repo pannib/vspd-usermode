@@ -151,15 +151,32 @@ VSPD/publish/VSPD.exe      # 已内置 .NET 运行时，普通双击即可运行
 > 没有 `vspd.sys` 时，软件内的「开启驱动」按钮会提示“未找到驱动包”，但不会崩溃。
 > 也可用 **com0com** 等现成已编译虚拟串口驱动替代（把其 `*.sys`+`*.inf` 放入 `Driver` 目录）。
 
+#### 第一步（仅首次）：把仓库推到 GitHub 触发一次 CI 构建驱动
+
+CI 已写好（`.github/workflows/build-driver.yml`，利用 GitHub 自带 WDK 环境，无需你本机装 WDK）：
+构建 `vspd.sys` → 用仓库内置测试证书 `Vspd.Driver/cert/vspd-test.pfx` 做**测试签名** → 打包
+`vspd.sys + vspd.inf + vspd-test.cer` 发布到 Release。你只需在 GitHub 建好空仓库后，本地执行：
+
+```bash
+cd VSPD-1
+git remote add origin https://github.com/<你的用户名>/VSPD.git
+git push -u origin master        # 推上去即自动触发 Actions 构建驱动
+```
+
+推完后在仓库 **Actions → Build VSPD Kernel Driver → Run workflow** 跑一次；完成后到 **Releases**
+下载 `vspd-driver.zip`。然后把 `vspd.json` 里的 `driverPackageRepo` 改成你的 `用户名/VSPD`
+（之后「开启驱动」会自动下载，无需手动放文件）。也可把 zip 解压进软件的 `Driver` 目录手动使用。
+
 #### 第二步：在软件里“一键开启/关闭驱动”（你要的按钮 + 保护机制）
 
 程序默认以**普通用户**运行（直接启动、进程内虚拟串口立即可用）；点「开启驱动」时
 才会按需弹 UAC 提权，无需全程管理员。
 
 1. 双击 `VSPD/publish/VSPD.exe`（或 `dotnet run --project VSPD`）启动界面。
-2. 点 **「开启驱动」**：程序以管理员身份执行——检测驱动包 → 必要时开启
-   “测试签名”模式（首次会提示需重启一次，重启后再点一次）→ `pnputil` 安装
-   → `sc start vspd` 启动内核驱动。完成后端口立即出现在
+2. 点 **「开启驱动」**：程序以管理员身份执行——若本地没有驱动包、但 `vspd.json` 里配置了
+   `driverPackageRepo`（你的 GitHub 仓库名 owner/repo），会**自动从 Release 下载** `vspd-driver.zip`；
+   随后开启“测试签名”模式（首次需重启一次，重启后再点一次），**导入仓库内置测试证书**，
+   `pnputil` 安装 → `sc start vspd` 启动内核驱动。完成后端口立即出现在
    「设备管理器 → 端口(COM 和 LPT)」，并能用 Putty、Modbus 工具、`System.IO.Ports` 直接打开。
 3. 驱动运行后，已通过控制通道 `\\.\VspdBus` 支持运行时新增/删除真实 COM 对
    （API：`Vspd.Bus.VspdBusController.CreatePair/DeletePair/EnumPorts`）；WPF 中「新增一对」

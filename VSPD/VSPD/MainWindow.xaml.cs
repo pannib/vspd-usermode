@@ -15,7 +15,7 @@ namespace VSPD;
 public partial class MainWindow : Window
 {
     private readonly VspdService _svc = new();
-    private readonly DriverManager _dm = new();
+    private readonly DriverManager _dm;
     private readonly string _configPath;
     private VirtualPortPair? _selected;
     private CancellationTokenSource? _cts;
@@ -26,6 +26,8 @@ public partial class MainWindow : Window
         InitializeComponent();
         _configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "vspd.json");
         LoadConfig();
+        _dm = new DriverManager(packageRepo: _svc.Config.DriverPackageRepo);
+        _dm.OnProgress += LogLine;
 
         // 退出保护：关闭程序时自动把驱动关掉（保护机制），默认开启
         Application.Current.Exit += (_, _) =>
