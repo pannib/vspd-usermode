@@ -38,17 +38,29 @@ jobs:
         shell: pwsh
         run: |
           $installer = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vs_installer.exe'
+          $toolset = 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0'
+          $wdkBuild = 'C:\Program Files (x86)\Windows Kits\10\build\WindowsDriver.Common.targets'
           if (-not (Test-Path $installer)) { Write-Error "vs_installer.exe not found"; exit 1 }
-          Write-Host "Installing WDK component (Microsoft.VisualStudio.Component.WDK) ..."
+          $log = "$env:RUNNER_TEMP\wdk_install.log"
+          Write-Host "Launching WDK install (quiet)..."
           $p = Start-Process -FilePath $installer -ArgumentList @(
             'modify',
             '--installPath', 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise',
             '--add', 'Microsoft.VisualStudio.Component.WDK',
-            '--quiet', '--norestart', '--wait'
-          ) -Wait -PassThru
+            '--quiet', '--norestart'
+          ) -RedirectStandardOutput $log -RedirectStandardError "$env:RUNNER_TEMP\wdk_err.log" -PassThru
+          $p.WaitForExit(900000)
           Write-Host "vs_installer exit code: $($p.ExitCode)"
-          $toolset = 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0'
-          if (Test-Path $toolset) { Write-Host "WDK toolset present: OK" } else { Write-Error "WDK toolset NOT found after install"; exit 1 }
+          if (Test-Path $log) { Write-Host "--- installer stdout (tail) ---"; Get-Content $log -Tail 25 }
+          if (Test-Path "$env:RUNNER_TEMP\wdk_err.log") { Write-Host "--- installer stderr (tail) ---"; Get-Content "$env:RUNNER_TEMP\wdk_err.log" -Tail 25 }
+          # 安装引擎可能在父进程退出后才写完，轮询真正的 WDK 构建目标是否就绪
+          $deadline = (Get-Date).AddMinutes(15)
+          while ((Get-Date) -lt $deadline) {
+            if (Test-Path $wdkBuild) { Write-Host "WDK build targets present."; break }
+            Start-Sleep -Seconds 15
+          }
+          if (-not (Test-Path $wdkBuild)) { Write-Error "WDK build targets NOT found - WDK not installed"; exit 1 }
+          Write-Host "WDK installed successfully."
 
       - name: Build vspd.sys (x64, Release)
         shell: cmd
