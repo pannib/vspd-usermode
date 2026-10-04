@@ -8,9 +8,13 @@
 .workbuddy/
 
 # ---- 驱动构建产物（由 CI 重新生成）----
-Vspd.Driver/x64/
-Vspd.Driver/WinDDK/
+**/Vspd.Driver/x64/
+**/Vspd.Driver/WinDDK/
 *.sys
+
+# ---- 驱动自签证书（CI 每次重新生成，含私钥，绝不入库）----
+*.pfx
+**/Vspd.Driver/cert/
 
 # ---- 自包含发布目录（含运行时，约 140MB，不进 git）----
 publish/

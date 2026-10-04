@@ -16,7 +16,7 @@ on:
   push:
     branches: [ main, master ]
     paths:
-      - 'Vspd.Driver/**'
+      - 'VSPD/Vspd.Driver/**'
       - '.github/workflows/build-driver.yml'
 
 permissions:
@@ -37,12 +37,12 @@ jobs:
       - name: Build vspd.sys (x64, Release)
         shell: cmd
         run: |
-          msbuild Vspd.Driver\vspd.vcxproj /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10
+          msbuild VSPD\Vspd.Driver\vspd.vcxproj /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10
 
       - name: Sign & package driver (zip)
         shell: pwsh
         run: |
-          $sys = "Vspd.Driver\x64\Release\vspd.sys"
+          $sys = "VSPD\Vspd.Driver\x64\Release\vspd.sys"
           if (-not (Test-Path $sys)) {
             Write-Error "未找到 vspd.sys，驱动构建失败，请查看上方 msbuild 日志。"
             exit 1
@@ -53,13 +53,14 @@ jobs:
           $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=VSPD Test Signing" `
                   -CertStoreLocation "Cert:\CurrentUser\My" -KeyUsage DigitalSignature `
                   -NotAfter (Get-Date).AddYears(10)
-          Set-AuthenticodeSignature -FilePath $sys -Certificate $cert -HashAlgorithm SHA256 `
-                  -TimestampServer "http://timestamp.digicert.com"
-          $cer = "Vspd.Driver\cert\vspd-test.cer"
+          Set-AuthenticodeSignature -FilePath $sys -Certificate $cert -HashAlgorithm SHA256
+          # 确保证书输出目录存在（CI 不保留仓库内的 cert/ 目录）
+          New-Item -ItemType Directory -Force -Path "VSPD\Vspd.Driver\cert" | Out-Null
+          $cer = "VSPD\Vspd.Driver\cert\vspd-test.cer"
           Export-Certificate -Cert $cert -FilePath $cer | Out-Null
           Remove-Item $cert.PSPath
           # 打包 vspd.sys + vspd.inf + 测试证书(.cer)，便于下载与安装时导入
-          Compress-Archive -Path $sys, "Vspd.Driver\vspd.inf", $cer -DestinationPath vspd-driver.zip -Force
+          Compress-Archive -Path $sys, "VSPD\Vspd.Driver\vspd.inf", $cer -DestinationPath vspd-driver.zip -Force
           Write-Host "已签名并打包：vspd-driver.zip"
 
       - name: Upload build artifact
