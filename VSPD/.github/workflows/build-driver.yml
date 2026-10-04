@@ -5,7 +5,7 @@ name: Build VSPD Kernel Driver (no local WDK needed)
 # 因此直接 msbuild 即可，不需要手动提供 EWDK ISO 链接。
 #
 # 构建完成后：
-#   - 用仓库内置的测试证书（Vspd.Driver/cert/vspd-test.pfx）对 vspd.sys 做“测试签名”
+#   - 每次构建自动生成一份自签测试证书，对 vspd.sys 做“测试签名”（不往仓库存私钥）
 #   - 打包 vspd.sys + vspd.inf + vspd-test.cer 为 vspd-driver.zip
 #   - 发布到 Artifacts 与 GitHub Release（附件 vspd-driver.zip）
 # 用户侧软件点「开启驱动」会自动：从 Release 下载该 zip → 导入证书 → 开启测试签名 → 安装并启动，
@@ -41,21 +41,25 @@ jobs:
 
       - name: Sign & package driver (zip)
         shell: pwsh
-        env:
-          CERT_PW: vspdtest
         run: |
           $sys = "Vspd.Driver\x64\Release\vspd.sys"
           if (-not (Test-Path $sys)) {
             Write-Error "未找到 vspd.sys，驱动构建失败，请查看上方 msbuild 日志。"
             exit 1
           }
-          # 用仓库内置的测试证书对驱动做“测试签名”（仅测试签名模式下可加载）
+          # 每次构建生成一份自签测试证书：签名与证书同包，安装时导入即可，避免仓库存私钥
           $pw = New-Object System.Security.SecureString
-          $env:CERT_PW.ToCharArray() | ForEach-Object { $pw.AppendChar($_) }
-          $cert = Get-PfxCertificate -FilePath "Vspd.Driver\cert\vspd-test.pfx" -Password $pw
-          Set-AuthenticodeSignature -FilePath $sys -Certificate $cert -HashAlgorithm SHA256 -TimestampServer "http://timestamp.digicert.com"
+          "vspdtest".ToCharArray() | ForEach-Object { $pw.AppendChar($_) }
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=VSPD Test Signing" `
+                  -CertStoreLocation "Cert:\CurrentUser\My" -KeyUsage DigitalSignature `
+                  -NotAfter (Get-Date).AddYears(10)
+          Set-AuthenticodeSignature -FilePath $sys -Certificate $cert -HashAlgorithm SHA256 `
+                  -TimestampServer "http://timestamp.digicert.com"
+          $cer = "Vspd.Driver\cert\vspd-test.cer"
+          Export-Certificate -Cert $cert -FilePath $cer | Out-Null
+          Remove-Item $cert.PSPath
           # 打包 vspd.sys + vspd.inf + 测试证书(.cer)，便于下载与安装时导入
-          Compress-Archive -Path $sys, "Vspd.Driver\vspd.inf", "Vspd.Driver\cert\vspd-test.cer" -DestinationPath vspd-driver.zip -Force
+          Compress-Archive -Path $sys, "Vspd.Driver\vspd.inf", $cer -DestinationPath vspd-driver.zip -Force
           Write-Host "已签名并打包：vspd-driver.zip"
 
       - name: Upload build artifact

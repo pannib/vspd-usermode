@@ -1,6 +1,6 @@
 {
   "defaultBaudRate": 115200,
-  "driverPackageRepo": "你的GitHub用户名/VSPD",
+  "driverPackageRepo": "pannib/vspd-usermode",
   "pairs": [
     {
       "nameA": "COM10",
