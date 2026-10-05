@@ -233,27 +233,26 @@ jobs:
             Write-Host "DIAG2: $cppTargets NOT FOUND"
           }
 
-          # ===== DIAG3：用最小 msbuild 工程探测 MSBuild 真正解析出的 $(_Platform) / $(VCTargetsPath) / 工具集 Exists 结果 =====
-          $probe = @'
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <PropertyGroup>
-    <Platform>x64</Platform>
-    <PlatformToolset></PlatformToolset>
-  </PropertyGroup>
-  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
-  <Target Name="Probe">
-    <Message Text="PROBE _Platform=[$(_Platform)]" Importance="high" />
-    <Message Text="PROBE Platform=[$(Platform)]" Importance="high" />
-    <Message Text="PROBE VCTargetsPath=[$(VCTargetsPath)]" Importance="high" />
-    <Message Text="PROBE Exists_x64=[$([MSBuild]::Exists('$(VCTargetsPath)Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0'))]" Importance="high" />
-    <Message Text="PROBE ExistsProps_x64=[$([MSBuild]::Exists('$(VCTargetsPath)Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0\WindowsKernelModeDriver10.0.props'))]" Importance="high" />
-  </Target>
-</Project>
-'@
+          # ===== DIAG3：最小 msbuild 工程探测 MSBuild 真正解析出的 $(_Platform) =====
+          # 注意：用「单行单引号字符串数组 + -join "`n"」构造 .proj，避免 here-string 的 '离列问题破坏 YAML 缩进。
+          $probeLines = @(
+            '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">',
+            '  <PropertyGroup>',
+            '    <Platform>x64</Platform>',
+            '    <PlatformToolset></PlatformToolset>',
+            '  </PropertyGroup>',
+            '  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />',
+            '  <Target Name="Probe">',
+            '    <Message Text="PROBE _Platform=[$(_Platform)]" Importance="high" />',
+            '    <Message Text="PROBE Platform=[$(Platform)]" Importance="high" />',
+            '    <Message Text="PROBE VCTargetsPath=[$(VCTargetsPath)]" Importance="high" />',
+            '  </Target>',
+            '</Project>'
+          )
           $probePath = Join-Path $workspace "probe_toolset.proj"
-          Set-Content -Path $probePath -Value $probe -Encoding UTF8
+          Set-Content -Path $probePath -Value ($probeLines -join "`n") -Encoding UTF8
           Write-Host "===== PROBE msbuild run ====="
-          & cmd /c ("call `"" + $bat + "`" && cd /d `"" + $workspace + "`" && set `"VSINSTALLDIR=" + $vsInstall + "`" && set `"VCTargetsPath=" + $vcTargetsNoSlash + "`" && set `"WDKContentRoot=" + $wdkContent + "`" && set `"WindowsSdkDir=" + $sdkDir + "`" && `"" + $msb.FullName + "`" /noautoresponse probe_toolset.proj /t:Probe /p:Platform=x64 /v:normal")
+          & cmd /c ("call `"" + $bat + "`" && cd /d `"" + $workspace + "`" && set `"VSINSTALLDIR=" + $vsInstall + "`" && set `"VCTargetsPath=" + $vcTargetsNoSlash + "`" && set `"WDKContentRoot=" + $wdkContent + "`" && set `"WindowsSdkDir=" + $sdkDir + "`" && `"" + $msb.FullName + "`" /noautoresponse probe_toolset.proj /t:Probe /p:Configuration=Release /p:Platform=x64 /v:normal")
           Write-Host "===== end PROBE ====="
 
           $workspace = $env:GITHUB_WORKSPACE
