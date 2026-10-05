@@ -190,14 +190,12 @@ jobs:
             Copy-Item -Path (Join-Path $vcTargets "platforms") -Destination (Join-Path $wk "platforms") -Recurse -Force
           }
           # 3) 写 wrapper（导入 Toolset.props + WDK 的 KMDF 工具集定义）
+          $wdkImportProps = if ($wdkKmPath) { '<Import Project="' + $wdkKmPath + '" />' } else { '' }
+          $wdkImportTargets = if ($wdkKmTargets) { '<Import Project="' + $wdkKmTargets + '" Condition="Exists(' + "'" + $wdkKmTargets + "'" + ')" />' } else { '' }
           $wrapperProps = '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">' +
-                          '<Import Project="Toolset.props" />' +
-                          (if ($wdkKmPath) { '<Import Project="' + $wdkKmPath + '" />' } else { '' }) +
-                          '</Project>'
+                          '<Import Project="Toolset.props" />' + $wdkImportProps + '</Project>'
           $wrapperTargets = '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">' +
-                            '<Import Project="Toolset.targets" />' +
-                            (if ($wdkKmTargets) { '<Import Project="' + $wdkKmTargets + '" Condition="Exists(' + "'" + $wdkKmTargets + "'" + ')" />' } else { '' }) +
-                            '</Project>'
+                            '<Import Project="Toolset.targets" />' + $wdkImportTargets + '</Project>'
           Set-Content -Path (Join-Path $kmdTs2 "WindowsKernelModeDriver10.0.props") -Value $wrapperProps -Encoding UTF8
           Set-Content -Path (Join-Path $kmdTs2 "WindowsKernelModeDriver10.0.targets") -Value $wrapperTargets -Encoding UTF8
           Write-Host "Wrapper written in copy at $kmdTs2"
