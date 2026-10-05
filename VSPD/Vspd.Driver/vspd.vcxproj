@@ -23,6 +23,10 @@
     <ProjectType>Driver</ProjectType>
     <TargetVersion>Windows10</TargetVersion>
     <MinimumVisualStudioVersion>16.0</MinimumVisualStudioVersion>
+    <!-- 自包含 EWDK 必须尽早定下 KMDF 工具集：否则 Microsoft.Cpp.props 导入阶段会回退到默认
+         (v100/v143 等) 工具集目录，而 EWDK 里并不存在该目录 → MSB4019。这里在导入前给出默认值，
+         各 Release/Debug|x64 配置组仍会再次确认。 -->
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
     <Configuration Condition="'$(Configuration)'==''">Debug</Configuration>
     <Platform Condition="'$(Platform)'==''">x64</Platform>
   </PropertyGroup>
