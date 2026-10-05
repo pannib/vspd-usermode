@@ -248,13 +248,14 @@ jobs:
             '    <Message Text="PROBE _Platform=[$(_Platform)]" Importance="high" />',
             '    <Message Text="PROBE Platform=[$(Platform)]" Importance="high" />',
             '    <Message Text="PROBE VCTargetsPath=[$(VCTargetsPath)]" Importance="high" />',
+            '    <Message Text="PROBE CurrentVCTargetsPath=[$(CurrentVCTargetsPath)]" Importance="high" />',
             '  </Target>',
             '</Project>'
           )
           $probePath = Join-Path $workspace "probe_toolset.proj"
           Set-Content -Path $probePath -Value ($probeLines -join "`n") -Encoding UTF8
           Write-Host "===== PROBE msbuild run ====="
-          & cmd /c ("call `"" + $bat + "`" && cd /d `"" + $workspace + "`" && set `"VSINSTALLDIR=" + $vsInstall + "`" && set `"VCTargetsPath=" + $vcTargetsNoSlash + "`" && set `"WDKContentRoot=" + $wdkContent + "`" && set `"WindowsSdkDir=" + $sdkDir + "`" && `"" + $msb.FullName + "`" /noautoresponse probe_toolset.proj /t:Probe /p:Configuration=Release /p:Platform=x64 /v:normal")
+          & cmd /c ("call `"" + $bat + "`" && cd /d `"" + $workspace + "`" && set `"VSINSTALLDIR=" + $vsInstall + "`" && set `"VCTargetsPath=" + $vcTargetsNoSlash + "`" && set `"CurrentVCTargetsPath=" + $vcTargetsNoSlash + "`" && set `"WDKContentRoot=" + $wdkContent + "`" && set `"WindowsSdkDir=" + $sdkDir + "`" && `"" + $msb.FullName + "`" /noautoresponse probe_toolset.proj /t:Probe /p:Configuration=Release /p:Platform=x64 /v:normal")
           Write-Host "===== end PROBE ====="
 
           # 路径传递策略（规避 cmd 对带空格长路径的引号拆解问题，此前引发 MSB1008 / MSB4102）：
@@ -280,7 +281,7 @@ jobs:
           Write-Host "Building driver inside EWDK environment ..."
           # call LaunchBuildEnv 继承 INCLUDE/LIB/PATH（编译器/链接器要用），随后用 set 覆盖 4 个路径变量，
           # 最后 msbuild 全路径 + /noautoresponse + @rsp 编译。
-          $msbCmd = ('call "{0}" && cd /d "{1}" && set "VSINSTALLDIR={2}" && set "VCTargetsPath={3}" && set "WDKContentRoot={4}" && set "WindowsSdkDir={5}" && "{6}" /noautoresponse @vspd_build.rsp VSPD\Vspd.Driver\vspd.vcxproj' `
+          $msbCmd = ('call "{0}" && cd /d "{1}" && set "VSINSTALLDIR={2}" && set "VCTargetsPath={3}" && set "CurrentVCTargetsPath={3}" && set "WDKContentRoot={4}" && set "WindowsSdkDir={5}" && "{6}" /noautoresponse @vspd_build.rsp VSPD\Vspd.Driver\vspd.vcxproj' `
                      -f $bat, $workspace, $vsInstall, $vcTargetsNoSlash, $wdkContent, $sdkDir, $msb.FullName)
           Write-Host "MSBUILD CMD: $msbCmd"
           & cmd /c $msbCmd
