@@ -15,7 +15,7 @@ namespace Vspd.Bus;
 /// 之所以把逻辑放在 C#（而非内联 PowerShell）里：类型安全、可编译校验，且能明确区分
 /// “真的装好了”与“命令没报错但其实没装成”两种情况，避免向用户假报成功。
 ///
-/// 返回码约定：0=STARTED，2=REBOOT_REQUIRED，3=PACKAGE_NOT_FOUND，1=FAILED。
+/// 返回码约定：0=STARTED，2=REBOOT_REQUIRED，3=PACKAGE_NOT_FOUND，4=SECUREBOOT_BLOCKED，1=FAILED。
 /// 具体文字结果写入 <c>--result</c> 指定的文件（供父进程读取展示）。
 /// </summary>
 [SupportedOSPlatform("windows")]
@@ -25,6 +25,8 @@ public static class DriverInstaller
     internal const int Failed = 1;
     internal const int RebootRequired = 2;
     internal const int PackageMissing = 3;
+    /// <summary>Secure Boot 已开启，Windows 拒绝启用测试签名模式 —— 需用户进 BIOS 关闭，非权限问题。</summary>
+    internal const int SecureBootBlocked = 4;
 
     private const string SvcName = "vspd";
     private const string BusHardwareId = @"Root\VSPDBUS";
@@ -60,10 +62,25 @@ public static class DriverInstaller
             bool testSigningOn = m.Success && Regex.IsMatch(m.Groups[1].Value, "^(yes|on|true)$", RegexOptions.IgnoreCase);
             if (!testSigningOn)
             {
+                // 1a) 前置拦截：Secure Boot 开启时，Windows 会拒绝写 testsigning（免管理员即可读到该状态）。
+                //     提前给出准确原因，既省掉一次注定失败的写入，也避免把用户误导到"权限不足"上去。
+                if (SecureBootInfo.IsEnabled() == true)
+                {
+                    Report("SECUREBOOT_BLOCKED");
+                    return SecureBootBlocked;
+                }
+
                 int rc = RunExe("bcdedit", "/set testsigning on", out string bout);
                 if (rc != 0)
                 {
-                    Report("ERROR:无法开启测试签名模式（需要管理员权限）：" + bout.Trim());
+                    // 1b) 兜底归因：万一读不到注册表状态（键缺失/非 UEFI），仍按 BCDEdit 的实际输出判断，
+                    //     确认是 Secure Boot 策略拦截就返回专门的码，而不是笼统报"需要管理员权限"。
+                    if (SecureBootInfo.IsPolicyBlock(bout))
+                    {
+                        Report("SECUREBOOT_BLOCKED");
+                        return SecureBootBlocked;
+                    }
+                    Report("ERROR:无法开启测试签名模式（bcdedit 退出码 " + rc + "）：" + bout.Trim());
                     return Failed;
                 }
                 Report("REBOOT_REQUIRED");
@@ -160,11 +177,15 @@ public static class DriverInstaller
         finally { cert.Dispose(); }
     }
 
-    /// <summary>运行命令并返回合并后的输出（stdout + stderr）。</summary>
+    /// <summary>
+    /// 运行命令并返回合并后的输出（stdout + stderr）。仅用于"只读查询"：
+    /// 命令无法启动（例如被安全软件拦截）时返回空串而不是抛异常 —— 探测失败不应该
+    /// 让整个安装流程崩掉，后续逻辑会据此降级处理。
+    /// </summary>
     private static string Capture(string fileName, string args)
     {
-        RunExe(fileName, args, out string output);
-        return output;
+        try { RunExe(fileName, args, out string output); return output; }
+        catch { return string.Empty; }
     }
 
     private static int RunExe(string fileName, string args, out string output)
