@@ -67,6 +67,7 @@ jobs:
         shell: pwsh
         run: |
           $iso = $env:EWDK_ISO
+          $workspace = $env:GITHUB_WORKSPACE
           if (-not (Test-Path $iso)) { Write-Error "EWDK ISO not found: $iso"; exit 1 }
           Write-Host "Mounting $iso ..."
           $disk = Mount-DiskImage -ImagePath $iso -PassThru
@@ -193,6 +194,7 @@ jobs:
           $wdkImportProps = if ($wdkKmPath) { '<Import Project="' + $wdkKmPath + '" />' } else { '' }
           $wdkImportTargets = if ($wdkKmTargets) { '<Import Project="' + $wdkKmTargets + '" Condition="Exists(' + "'" + $wdkKmTargets + "'" + ')" />' } else { '' }
           $wrapperProps = '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">' +
+                          '<PropertyGroup><_ToolsetFound>true</_ToolsetFound></PropertyGroup>' +
                           '<Import Project="Toolset.props" />' + $wdkImportProps + '</Project>'
           $wrapperTargets = '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">' +
                             '<Import Project="Toolset.targets" />' + $wdkImportTargets + '</Project>'
@@ -254,8 +256,6 @@ jobs:
           Write-Host "===== PROBE msbuild run ====="
           & cmd /c ("call `"" + $bat + "`" && cd /d `"" + $workspace + "`" && set `"VSINSTALLDIR=" + $vsInstall + "`" && set `"VCTargetsPath=" + $vcTargetsNoSlash + "`" && set `"WDKContentRoot=" + $wdkContent + "`" && set `"WindowsSdkDir=" + $sdkDir + "`" && `"" + $msb.FullName + "`" /noautoresponse probe_toolset.proj /t:Probe /p:Configuration=Release /p:Platform=x64 /v:normal")
           Write-Host "===== end PROBE ====="
-
-          $workspace = $env:GITHUB_WORKSPACE
 
           # 路径传递策略（规避 cmd 对带空格长路径的引号拆解问题，此前引发 MSB1008 / MSB4102）：
           #  - 4 个路径变量通过 `set "VAR=value"` 写成环境变量。cmd 的 set 语法能正确保留空格与结尾反斜杠，
