@@ -144,7 +144,7 @@ jobs:
                     "set `"WDKContentRoot=$wdkContent`" && " +
                     "set `"WindowsSdkDir=$sdkDir`" && " +
                     "cd /d `"$workspace`" && " +
-                    "`"$($msb.FullName)`" VSPD\Vspd.Driver\vspd.vcxproj " +
+                    "`"$($msb.FullName)`" /noautoresponse VSPD\Vspd.Driver\vspd.vcxproj " +
                     "/p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10 " +
                     "/p:VSINSTALLDIR=`"$vsInstall`" /p:VCTargetsPath=`"$vcTargets`" " +
                     "/p:WDKContentRoot=`"$wdkContent`" /p:WindowsSdkDir=`"$sdkDir`" /v:normal")
