@@ -78,9 +78,30 @@ jobs:
           $bat = Join-Path $drive "LaunchBuildEnv.cmd"
           if (-not (Test-Path $bat)) { Write-Error "LaunchBuildEnv.cmd not found at $bat"; Dismount-DiskImage -ImagePath $iso -ErrorAction SilentlyContinue; exit 1 }
 
+          # 该版 EWDK 的 LaunchBuildEnv 不会把 msbuild 放进 PATH，因此在盘内定位 MSBuild.exe 全路径
+          $msb = $null
+          $candidates = @(
+            "Program Files\Microsoft Visual Studio\2026\BuildTools\MSBuild\Current\Bin\MSBuild.exe",
+            "Program Files\Microsoft Visual Studio\2026\Professional\MSBuild\Current\Bin\MSBuild.exe",
+            "Program Files\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe",
+            "Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe"
+          )
+          foreach ($c in $candidates) {
+            $p = Join-Path $drive $c
+            if (Test-Path $p) { $msb = Get-Item $p; break }
+          }
+          if (-not $msb) {
+            Write-Host "候选路径均未命中，全盘递归查找 MSBuild.exe ..."
+            $msb = Get-ChildItem -Path "$drive\" -Recurse -Filter MSBuild.exe -ErrorAction SilentlyContinue |
+                   Where-Object { $_.FullName -match 'MSBuild\\Current\\Bin\\MSBuild\.exe$' } | Select-Object -First 1
+          }
+          if (-not $msb) { Write-Error "MSBuild.exe not found on EWDK drive $drive"; Dismount-DiskImage -ImagePath $iso -ErrorAction SilentlyContinue; exit 1 }
+          Write-Host ("Using MSBuild: " + $msb.FullName)
+
           $workspace = $env:GITHUB_WORKSPACE
           Write-Host "Building driver inside EWDK environment ..."
-          & cmd /c ("`"$bat`" && cd /d `"$workspace`" && msbuild VSPD\Vspd.Driver\vspd.vcxproj /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10 /v:normal")
+          # call LaunchBuildEnv 以继承 INCLUDE/LIB/WDK 等编译环境变量；msbuild 用全路径（绕过 PATH 缺失）
+          & cmd /c ("call `"$bat`" && set PATH=`"$($msb.DirectoryName)`";%PATH% && cd /d `"$workspace`" && `"$($msb.FullName)`" VSPD\Vspd.Driver\vspd.vcxproj /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10 /p:PlatformToolset=WindowsKernelModeDriver10.0 /v:normal")
           $buildExit = $LASTEXITCODE
           Write-Host "msbuild exit code: $buildExit"
 
