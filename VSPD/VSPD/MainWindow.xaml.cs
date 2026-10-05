@@ -151,6 +151,8 @@ public partial class MainWindow : Window
         {
             DriverState.Running => "驱动状态：● 已开启（真实 COM 端口可见）",
             DriverState.InstalledStopped => "驱动状态：○ 已安装但未开启（点“开启驱动”）",
+            DriverState.SecureBootBlocked =>
+                "驱动状态：⚠ 无法开启 —— 本机 Secure Boot 已启用，Windows 禁止测试签名驱动（需先进 BIOS 关闭 Secure Boot；也可直接用左侧虚拟串口对）",
             DriverState.PackageMissing => "驱动状态：✕ 未找到驱动包（见说明：用 CI 构建 vspd.sys 放入 Driver 目录）",
             _ => "驱动状态：？ 未知"
         };
@@ -163,6 +165,15 @@ public partial class MainWindow : Window
         LogLine("正在开启驱动（将以管理员身份提权安装并启动内核驱动，请允许 UAC）…");
         var (outcome, msg) = await _dm.EnableAsync();
         LogLine("开启结果：" + msg);
+
+        // Secure Boot 拦截需要用户离开本程序去改 BIOS，光写日志容易被忽略，
+        // 所以额外弹一个明确的操作指引（内容与日志一致，取自同一常量）。
+        if (outcome == EnableOutcome.SecureBootBlocked)
+        {
+            MessageBox.Show(this, DriverManager.SecureBootGuidance,
+                "需要先关闭 Secure Boot（安全引导）", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+
         await RefreshDriverStateAsync();
     }
 
@@ -287,6 +298,8 @@ public partial class MainWindow : Window
         LogLine("4) “新增一对”会创建进程内虚拟串口（立即生效，无需任何驱动）。");
         LogLine("5) 想让端口出现在「设备管理器 → 端口(COM 和 LPT)」被任意串口工具打开：需内核驱动。");
         LogLine("   → 点「开启驱动」（需管理员）：安装并启动 vspd 内核驱动；用 .github/workflows 的 CI 构建 vspd.sys 放入 Driver 目录即可，无需本地 WDK。");
+        LogLine("   → 注意：测试签名的内核驱动要求系统处于测试签名模式；若 BIOS 里 Secure Boot 为 Enabled，");
+        LogLine("     Windows 会拒绝开启测试签名（报“该值受安全引导策略保护”）。此时需先进 BIOS 把 Secure Boot 改为 Disabled 再重试。");
         LogLine("6) 「关闭驱动」停止内核驱动；退出程序默认自动关闭驱动（保护机制）。");
         LogLine("7) “模拟拔插”会把选中端口置为已移除，此后读写将抛 PortRemovedException，用于异常测试。");
     }
