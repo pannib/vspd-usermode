@@ -1,8 +1,9 @@
-name: Build VSPD Kernel Driver (no local WDK needed)
+name: Build VSPD Kernel Driver (EWDK, no local WDK needed)
 
-# 路径 1：无需在本机安装 WDK。
-# GitHub 的 windows-2022 / windows-latest Runner 已预装 WDK（22H2 / 10.0.26100）+ VS2022，
-# 因此直接 msbuild 即可，不需要手动提供 EWDK ISO 链接。
+# 方案 A：无需在本机安装 WDK。
+# GitHub 的 windows-2022 Runner 预装的 VS 不允许“modify 加装 WDK”(vs_installer 立即 exit 1)，
+# 因此改用微软官方「自包含 EWDK ISO」：下载后挂载，用 ISO 自带的 LaunchBuildEnv.cmd
+# 拉起 EWDK 自带的构建环境（编译器/链接器/msbuild/WDK 目标全在里面），直接 msbuild。
 #
 # 构建完成后：
 #   - 每次构建自动生成一份自签测试证书，对 vspd.sys 做“测试签名”（不往仓库存私钥）
@@ -22,73 +23,96 @@ on:
 permissions:
   contents: write   # 创建 Release 需要
 
+env:
+  # 官方 EWDK 永久跳转链接（302 跳转到 download.microsoft.com 上的 ISO）。
+  # 如需指定具体版本可改成直接的 download.microsoft.com 链接。
+  EWDK_FWURL: "https://go.microsoft.com/fwlink/?LinkId=2371663"
+
 jobs:
   build-driver:
-    # windows-2022 默认未预装 WDK；先安装 Windows Driver Kit(VS 组件)，再编译内核驱动
     runs-on: windows-2022
+    timeout-minutes: 360
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v2
-
-      - name: Install Windows Driver Kit (WDK) into Visual Studio
+      - name: Download EWDK ISO
         shell: pwsh
         run: |
-          $installer = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vs_installer.exe'
-          $toolset = 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0'
-          $wdkBuild = 'C:\Program Files (x86)\Windows Kits\10\build\WindowsDriver.Common.targets'
-          if (-not (Test-Path $installer)) { Write-Error "vs_installer.exe not found"; exit 1 }
-          $log = "$env:RUNNER_TEMP\wdk_install.log"
-          Write-Host "Launching WDK install (quiet)..."
-          $p = Start-Process -FilePath $installer -ArgumentList @(
-            'modify',
-            '--installPath', 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise',
-            '--add', 'Microsoft.VisualStudio.Component.WDK',
-            '--quiet', '--norestart'
-          ) -RedirectStandardOutput $log -RedirectStandardError "$env:RUNNER_TEMP\wdk_err.log" -PassThru
-          $p.WaitForExit(900000)
-          Write-Host "vs_installer exit code: $($p.ExitCode)"
-          if (Test-Path $log) { Write-Host "--- installer stdout (tail) ---"; Get-Content $log -Tail 25 }
-          if (Test-Path "$env:RUNNER_TEMP\wdk_err.log") { Write-Host "--- installer stderr (tail) ---"; Get-Content "$env:RUNNER_TEMP\wdk_err.log" -Tail 25 }
-          # 安装引擎可能在父进程退出后才写完，轮询真正的 WDK 构建目标是否就绪
-          $deadline = (Get-Date).AddMinutes(15)
-          while ((Get-Date) -lt $deadline) {
-            if (Test-Path $wdkBuild) { Write-Host "WDK build targets present."; break }
-            Start-Sleep -Seconds 15
+          $iso = Join-Path $env:RUNNER_TEMP "ewdk.iso"
+          Write-Host "Downloading EWDK from $env:EWDK_FWURL ..."
+          $dest = $iso
+          $url = $env:EWDK_FWURL
+          $ok = $false
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+              Write-Host "Attempt $attempt ..."
+              Invoke-WebRequest -Uri $url -OutFile $dest -TimeoutSec 3500 `
+                -MaximumRetryCount 2 -RetryIntervalSec 15
+              $ok = $true
+              break
+            } catch {
+              Write-Warning "Download failed: $($_.Exception.Message)"
+              if (Test-Path $dest) { Remove-Item $dest -Force }
+            }
           }
-          if (-not (Test-Path $wdkBuild)) { Write-Error "WDK build targets NOT found - WDK not installed"; exit 1 }
-          Write-Host "WDK installed successfully."
+          if (-not $ok) { Write-Error "EWDK download failed after retries"; exit 1 }
+          $sz = (Get-Item $dest).Length
+          Write-Host ("EWDK downloaded: {0:N0} bytes ({1:N2} GB)" -f $sz, ($sz/1GB))
+          # 暴露给后续步骤
+          "EWDK_ISO=$iso" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Build vspd.sys (x64, Release)
-        shell: cmd
+      - name: Mount EWDK & build vspd.sys (x64, Release)
+        shell: pwsh
         run: |
-          msbuild VSPD\Vspd.Driver\vspd.vcxproj /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10
+          $iso = $env:EWDK_ISO
+          if (-not (Test-Path $iso)) { Write-Error "EWDK ISO not found: $iso"; exit 1 }
+          Write-Host "Mounting $iso ..."
+          $disk = Mount-DiskImage -ImagePath $iso -PassThru
+          $drive = (Get-Volume -DiskImage $disk).DriveLetter
+          if (-not $drive) { Write-Error "Could not determine mounted drive letter"; exit 1 }
+          $drive = $drive + ":"
+          Write-Host "EWDK mounted at $drive"
+
+          $bat = Join-Path $drive "LaunchBuildEnv.cmd"
+          if (-not (Test-Path $bat)) { Write-Error "LaunchBuildEnv.cmd not found at $bat"; Dismount-DiskImage -ImagePath $iso -ErrorAction SilentlyContinue; exit 1 }
+
+          $workspace = $env:GITHUB_WORKSPACE
+          Write-Host "Building driver inside EWDK environment ..."
+          & cmd /c ("`"$bat`" && cd /d `"$workspace`" && msbuild VSPD\Vspd.Driver\vspd.vcxproj /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10 /v:normal")
+          $buildExit = $LASTEXITCODE
+          Write-Host "msbuild exit code: $buildExit"
+
+          # 卸载 ISO 释放空间（尽力）
+          try { Dismount-DiskImage -ImagePath $iso -ErrorAction SilentlyContinue } catch {}
+
+          if ($buildExit -ne 0) { Write-Error "Driver build failed (msbuild exit $buildExit)"; exit $buildExit }
+          Write-Host "Driver build OK."
 
       - name: Sign & package driver (zip)
         shell: pwsh
         run: |
-          $sys = "VSPD\Vspd.Driver\x64\Release\vspd.sys"
-          if (-not (Test-Path $sys)) {
+          $sys = Get-ChildItem -Path "VSPD\Vspd.Driver" -Filter vspd.sys -Recurse | Select-Object -First 1
+          if (-not $sys) {
             Write-Error "未找到 vspd.sys，驱动构建失败，请查看上方 msbuild 日志。"
             exit 1
           }
+          Write-Host "Found vspd.sys at $($sys.FullName)"
           # 每次构建生成一份自签测试证书：签名与证书同包，安装时导入即可，避免仓库存私钥
           $pw = New-Object System.Security.SecureString
           "vspdtest".ToCharArray() | ForEach-Object { $pw.AppendChar($_) }
           $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=VSPD Test Signing" `
                   -CertStoreLocation "Cert:\CurrentUser\My" -KeyUsage DigitalSignature `
                   -NotAfter (Get-Date).AddYears(10)
-          Set-AuthenticodeSignature -FilePath $sys -Certificate $cert -HashAlgorithm SHA256
+          Set-AuthenticodeSignature -FilePath $sys.FullName -Certificate $cert -HashAlgorithm SHA256
           # 确保证书输出目录存在（CI 不保留仓库内的 cert/ 目录）
           New-Item -ItemType Directory -Force -Path "VSPD\Vspd.Driver\cert" | Out-Null
           $cer = "VSPD\Vspd.Driver\cert\vspd-test.cer"
           Export-Certificate -Cert $cert -FilePath $cer | Out-Null
           Remove-Item $cert.PSPath
           # 打包 vspd.sys + vspd.inf + 测试证书(.cer)，便于下载与安装时导入
-          Compress-Archive -Path $sys, "VSPD\Vspd.Driver\vspd.inf", $cer -DestinationPath vspd-driver.zip -Force
+          Compress-Archive -Path $sys.FullName, "VSPD\Vspd.Driver\vspd.inf", $cer -DestinationPath vspd-driver.zip -Force
           Write-Host "已签名并打包：vspd-driver.zip"
 
       - name: Upload build artifact
