@@ -41,11 +41,11 @@ public enum EnableOutcome
 /// <summary>
 /// 内核驱动生命周期管理器（仅 Windows）。
 /// 把“安装/启动/停止”内核驱动的复杂步骤封装成按钮级操作：
-///   - EnableAsync()   -> 检测驱动包、按需开启测试签名、pnputil 安装、sc start
-///   - DisableAsync()  -> sc stop（对应“关闭驱动”按钮与退出保护）
+///   - EnableAsync()   -> 检测/自动下载驱动包、以管理员身份安装并启动内核驱动
+///   - DisableAsync()  -> 停止内核驱动
 ///   - GetStateAsync() -> 查询当前状态
-/// 调用进程需要具备管理员权限（本程序已通过 app.manifest 申请 requireAdministrator）；
-/// 若因权限不足而失败，会自动尝试通过 runas 提升后重试。
+/// 本程序以普通用户权限启动（app.manifest = asInvoker）。需要内核操作时，会把自身以
+/// --vspd-install-driver / --vspd-stop-driver 静默提权重启（runas），由 DriverInstaller 执行。
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class DriverManager
@@ -135,36 +135,34 @@ public sealed class DriverManager
     {
         if (!OperatingSystem.IsWindows())
             return (EnableOutcome.Failed, "仅 Windows 支持内核驱动。");
-        if (!PackagePresent)
-            return (EnableOutcome.PackageMissing,
-                $"未找到驱动包（需要 vspd.sys 与 vspd.inf）。目录：{PackageDir}");
 
-        // 已运行则直接返回
+        // 已在运行则无需安装
         if (IsDriverPresent())
             return (EnableOutcome.AlreadyRunning, "驱动已在运行。");
 
-        // 本地缺驱动包时，若配置了仓库则自动下载（用户只需推一次代码 + 跑 CI）
-        if (!PackagePresent)
+        // 本地缺驱动包时，若配置了仓库则自动从 Release 下载。
+        // 关键：必须先“尝试下载”，绝不能像旧实现那样在缺包时提前 return——
+        // 那会让这段自动下载永远不执行（成为死代码），使“自动下载驱动”整体失效。
+        if (ShouldTryDownload(PackagePresent, PackageRepo))
         {
-            if (!string.IsNullOrWhiteSpace(PackageRepo))
-            {
-                OnProgress?.Invoke("本地未找到驱动包，尝试从 GitHub Release 自动下载…");
-                var (ok, msg) = await TryAcquirePackageAsync().ConfigureAwait(false);
-                OnProgress?.Invoke("自动下载：" + msg);
-                if (!ok)
-                    return (EnableOutcome.PackageMissing, msg + $"（仓库：{PackageRepo}，目录：{PackageDir}）");
-            }
-            else
-            {
-                return (EnableOutcome.PackageMissing,
-                    $"未找到驱动包（需要 vspd.sys 与 vspd.inf）。目录：{PackageDir}；可在 vspd.json 配置 driverPackageRepo 后自动下载。");
-            }
+            OnProgress?.Invoke("本地未找到驱动包，尝试从 GitHub Release 自动下载…");
+            var (ok, msg) = await TryAcquirePackageAsync().ConfigureAwait(false);
+            OnProgress?.Invoke("自动下载：" + msg);
+            if (!ok && !PackagePresent)
+                return (EnableOutcome.PackageMissing, msg + $"（仓库：{PackageRepo}，目录：{PackageDir}）");
         }
 
-        var script = BuildEnableScript(PackageDir);
-        var (ok2, detail) = await RunElevatedPowerShell(script).ConfigureAwait(false);
+        if (!PackagePresent)
+        {
+            return string.IsNullOrWhiteSpace(PackageRepo)
+                ? (EnableOutcome.PackageMissing,
+                    $"未找到驱动包（需要 vspd.sys 与 vspd.inf）。目录：{PackageDir}；可在 vspd.json 配置 driverPackageRepo 后自动下载。")
+                : (EnableOutcome.PackageMissing,
+                    $"未找到驱动包且自动下载失败。目录：{PackageDir}；仓库：{PackageRepo}");
+        }
 
-        if (!ok2)
+        var (launched, detail) = await RunInstallerElevatedAsync().ConfigureAwait(false);
+        if (!launched)
             return (EnableOutcome.Failed, detail);
 
         return detail switch
@@ -219,12 +217,8 @@ public sealed class DriverManager
     {
         if (!OperatingSystem.IsWindows()) return (false, "仅 Windows 支持。");
 
-        var script = "$ErrorActionPreference='Stop'\n" +
-                     "$r=Join-Path $env:TEMP 'vspd_result.txt'\n" +
-                     "try { sc.exe stop vspd | Out-Null; Set-Content -Path $r -Value 'STOPPED' } " +
-                     "catch { Set-Content -Path $r -Value ('ERROR:'+$_.Exception.Message) }\n";
-        var (ok, detail) = await RunElevatedPowerShell(script).ConfigureAwait(false);
-        if (!ok) return (false, detail);
+        var (launched, detail) = await RunElevatedAsync("--vspd-stop-driver", null).ConfigureAwait(false);
+        if (!launched) return (false, detail);
         if (detail == "STOPPED") return (true, "驱动已停止，端口已移除。");
         if (detail.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase))
             return (false, detail[6..].Trim());
@@ -286,59 +280,41 @@ public sealed class DriverManager
         return candidates[0];
     }
 
-    private static string BuildEnableScript(string baseDir)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine("$ErrorActionPreference='Stop'");
-        sb.AppendLine("$r=Join-Path $env:TEMP 'vspd_result.txt'");
-        sb.AppendLine("function Out-Result($m){ Set-Content -Path $r -Value $m }");
-        sb.AppendLine("try {");
-        sb.AppendLine($"  $base = '{baseDir.Replace("'", "''")}'");
-        sb.AppendLine("  $inf = Join-Path $base 'vspd.inf'");
-        sb.AppendLine("  $sys = Join-Path $base 'vspd.sys'");
-        sb.AppendLine("  if (!(Test-Path $sys) -or !(Test-Path $inf)) { Out-Result 'PACKAGE_NOT_FOUND'; exit 0 }");
-        // 测试签名：若未开启则开启（需重启后生效）；已开启则继续安装
-        sb.AppendLine("  $ts = (bcdedit /enum | Out-String)");
-        sb.AppendLine("  if ($ts -notmatch 'testsigning') { bcdedit /set testsigning on | Out-Null; Out-Result 'REBOOT_REQUIRED'; exit 0 }");
-        sb.AppendLine("  if ($ts -notmatch 'On') { bcdedit /set testsigning on | Out-Null; Out-Result 'REBOOT_REQUIRED'; exit 0 }");
-        // 导入仓库内置的测试证书到本机根/受信任发布者（测试签名驱动加载所必需）
-        sb.AppendLine("  $cer = Join-Path $base 'vspd-test.cer'");
-        sb.AppendLine("  if (Test-Path $cer) {");
-        sb.AppendLine("    Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\\LocalMachine\\Root' | Out-Null");
-        sb.AppendLine("    Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\\LocalMachine\\TrustedPublisher' | Out-Null");
-        sb.AppendLine("  }");
-        // 安装并启动
-        sb.AppendLine("  pnputil /add-driver \"$inf\" /install | Out-Null");
-        sb.AppendLine("  $svc = Get-Service -Name vspd -ErrorAction SilentlyContinue");
-        sb.AppendLine("  if ($null -eq $svc -or $svc.Status -ne 'Running') { sc.exe start vspd | Out-Null }");
-        sb.AppendLine("  Out-Result 'STARTED'");
-        sb.AppendLine("} catch {");
-        sb.AppendLine("  Out-Result ('ERROR:'+$_.Exception.Message)");
-        sb.AppendLine("}");
-        return sb.ToString();
-    }
+    /// <summary>
+    /// 是否需要尝试从 Release 自动下载驱动包（纯逻辑，便于单元测试回归）。
+    /// 单独抽出这个判定，就是为了防止再度出现“缺包时提前 return 导致自动下载成死代码”的回归。
+    /// </summary>
+    internal static bool ShouldTryDownload(bool packagePresent, string? packageRepo)
+        => !packagePresent && !string.IsNullOrWhiteSpace(packageRepo);
 
-    /// <summary>以管理员身份（runas）运行 PowerShell 脚本，读取结果文件中的单行结果。</summary>
-    private static async Task<(bool Ok, string Detail)> RunElevatedPowerShell(string script)
-    {
-        string tmp;
-        try
-        {
-            tmp = Path.Combine(Path.GetTempPath(), "vspd_" + Guid.NewGuid().ToString("N") + ".ps1");
-            await File.WriteAllTextAsync(tmp, script).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            return (false, "写入临时脚本失败：" + ex.Message);
-        }
+    /// <summary>以管理员身份安装内核驱动：把自身以 --vspd-install-driver 静默提权重启。</summary>
+    private Task<(bool Launched, string Detail)> RunInstallerElevatedAsync()
+        => RunElevatedAsync("--vspd-install-driver", PackageDir);
 
-        string resultFile = Path.Combine(Path.GetTempPath(), "vspd_result.txt");
+    /// <summary>
+    /// 把自身（同一个 exe）以管理员身份静默重启，执行 <paramref name="mode"/> 指定的动作，
+    /// 通过临时结果文件回传文字结果。返回 (是否拿到结果文字, 结果文字)。
+    /// 若用户拒绝 UAC（Win32 1223）或未拿到结果，则第一项为 false、第二项为说明。
+    /// </summary>
+    private static async Task<(bool Launched, string Detail)> RunElevatedAsync(string mode, string? packageDir)
+    {
+        string? exe = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exe) || !exe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            exe = System.Reflection.Assembly.GetEntryAssembly()?.Location;
+
+        string resultFile = Path.Combine(Path.GetTempPath(), "vspd_result_" + Guid.NewGuid().ToString("N") + ".txt");
         try { if (File.Exists(resultFile)) File.Delete(resultFile); } catch { }
+
+        var args = new StringBuilder();
+        args.Append(mode);
+        if (!string.IsNullOrWhiteSpace(packageDir))
+            args.Append(" \"").Append(packageDir).Append('"');
+        args.Append(" --result \"").Append(resultFile).Append('"');
 
         var psi = new ProcessStartInfo
         {
-            FileName = "powershell.exe",
-            Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{tmp}\"",
+            FileName = exe,
+            Arguments = args.ToString(),
             Verb = "runas",              // 触发 UAC 提权
             UseShellExecute = true,
             CreateNoWindow = true
@@ -348,24 +324,24 @@ public sealed class DriverManager
         {
             using var p = Process.Start(psi);
             if (p == null) return (false, "无法启动提权进程。");
-            // 若用户拒绝 UAC，进程会立即退出且退出码非 0
-            p.WaitForExit(120_000);
+            p.WaitForExit(180_000);
 
             if (!File.Exists(resultFile))
-                return (false, p.ExitCode == 1223
-                    ? "已取消 UAC 提权，驱动未开启。"
-                    : "提权脚本未返回结果（可能缺少 WDK/签名工具）。");
+                return (false, "提权进程未返回结果（可能被 UAC 拒绝或异常退出）。");
 
             var detail = (await File.ReadAllTextAsync(resultFile).ConfigureAwait(false)).Trim();
             return (true, detail);
         }
+        catch (System.ComponentModel.Win32Exception wex) when (wex.NativeErrorCode == 1223)
+        {
+            return (false, "已取消 UAC 提权，操作未执行。");
+        }
         catch (Exception ex)
         {
-            return (false, "运行提权脚本异常：" + ex.Message);
+            return (false, "运行提权进程异常：" + ex.Message);
         }
         finally
         {
-            try { File.Delete(tmp); } catch { }
             try { File.Delete(resultFile); } catch { }
         }
     }
