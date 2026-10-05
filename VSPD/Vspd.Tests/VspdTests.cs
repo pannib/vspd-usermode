@@ -34,7 +34,7 @@ public class VspdTests
 
     // —— 2. 大批量传输保序（跨缓冲区倍数）——
     [Fact]
-    public void LargeTransfer_PreservesOrder()
+    public async Task LargeTransfer_PreservesOrder()
     {
         using var pair = new VirtualPortPair("COM62", "COM63", rxBufferSize: 256);
         pair.Open();
@@ -59,13 +59,13 @@ public class VspdTests
         while (got < data.Length)
             got += pair.PortA.Read(read, got, read.Length - got);
 
-        Assert.True(writer.Wait(5000));
+        await writer.WaitAsync(TimeSpan.FromSeconds(5));   // 超时即抛 TimeoutException，测试失败信息更清晰
         Assert.Equal(data, read);
     }
 
     // —— 3. 硬件流控(RTS/CTS)：接收方满时发送方阻塞，读出后恢复 ——
     [Fact]
-    public void HardwareFlowControl_BacksOffWhenReceiverFull()
+    public async Task HardwareFlowControl_BacksOffWhenReceiverFull()
     {
         var cfg = new SerialConfig
         {
@@ -94,13 +94,13 @@ public class VspdTests
         while (total < 2000)
             total += b.Read(buf, total, buf.Length - total);
 
-        Assert.True(writeTask.Wait(5000));
+        await writeTask.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(2000, b.BytesReceived);
     }
 
     // —— 4. 软件流控(XON/XOFF)：接收缓冲满时发出 XOFF，腾空后发出 XON ——
     [Fact]
-    public void SoftwareFlowControl_SendsXoffThenXon()
+    public async Task SoftwareFlowControl_SendsXoffThenXon()
     {
         var cfg = new SerialConfig
         {
@@ -127,7 +127,7 @@ public class VspdTests
         while (total < 2000)
             total += b.Read(buf, total, buf.Length - total);
 
-        Assert.True(writeTask.Wait(5000));
+        await writeTask.WaitAsync(TimeSpan.FromSeconds(5));
         // 腾空后应已发送 XON
         Assert.True(b.XonSentCount > 0);
         Assert.Equal(2000, b.BytesReceived);
