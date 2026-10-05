@@ -210,6 +210,21 @@ jobs:
           $vcTargets = $wk
           Write-Host "VCTargetsPath repointed to writable copy: $vcTargets"
 
+          # 5) 补丁：标准 VCTargetsPath 以反斜杠结尾，但部分 props（如 Microsoft.Cpp.ToolsetLocation.props(106)
+          #    用 “$(VCTargetsPath)Platforms\...” 直接拼接、未自补反斜杠。我们传入的 VCTargetsPath 不带结尾斜杠，
+          #    导致路径退化为 “vc180Platforms\...”（缺斜杠 → MSB4019）。在可写副本里把所有
+          #    “$(VCTargetsPath)Platforms” 统一改成 “$(VCTargetsPath)\Platforms”（语义等价于标准结尾斜杠行为）。
+          $patched = 0
+          Get-ChildItem -Path $wk -Recurse -Include *.props,*.targets -ErrorAction SilentlyContinue | ForEach-Object {
+            $c = Get-Content $_.FullName -Raw
+            if ($c -match '\$\(VCTargetsPath\)Platforms') {
+              $c = $c -replace '\$\(VCTargetsPath\)Platforms', '$(VCTargetsPath)\Platforms'
+              Set-Content -Path $_.FullName -Value $c -Encoding UTF8
+              $patched++
+            }
+          }
+          Write-Host "Patched $patched props/targets files for missing VCTargetsPath trailing slash"
+
           # 重要：vcxproj 第 30 行是 $(VCTargetsPath)\Microsoft.Cpp.Default.props，
           # 即调用方自己补了“\”，所以 VCTargetsPath MUST 不带结尾反斜杠（否则变成 v180\\\... → MSB4102）。
           $vcTargetsNoSlash = $vcTargets.TrimEnd('\')
