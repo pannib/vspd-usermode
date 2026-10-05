@@ -264,9 +264,18 @@ jobs:
           #  - 仅把 Configuration/Platform/TargetVersion 这种无空格的简单参数放进 vspd_build.rsp。
           #  - /noautoresponse 关掉 LaunchBuildEnv 自动生成的、含拆碎长路径的 MSBuild.rsp。
           $rspPath = Join-Path $workspace "vspd_build.rsp"
+          # 关键修复（MSB8020 根因）：该版 EWDK 的 props 链不会把 $(Platform) 推导成 $(_Platform)，
+          # 导致 Microsoft.Cpp.props 里“工具集 .props 的 Exists 检查”路径变成
+          #   $(VCTargetsPath)\Platforms\\PlatformToolsets\...  （缺 x64，双反斜杠）
+          # Exists 落空 → WindowsKernelModeDriver10.0.props（我们的 wrapper）不被导入 →
+          # _ToolsetFound 恒为 false → MSB8020。
+          # 解决：显式把 _Platform=x64（让工具集导入路径正确解析）与 _ToolsetFound=true
+          # （兜底通过 MSB8020 判定）作为全局属性传入；两者均为无空格简单值，适合放进 rsp。
           $rspLines = @(
             "/p:Configuration=Release",
             "/p:Platform=x64",
+            "/p:_Platform=x64",
+            "/p:_ToolsetFound=true",
             "/p:TargetVersion=Windows10",
             "/v:normal"
           )
