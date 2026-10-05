@@ -269,15 +269,19 @@ VOID VspdEvtPortWrite(WDFQUEUE Queue, WDFREQUEST Request, size_t Length)
     SIZE_T written = VspdBufWrite(b, peer, in, inLen);
 
     // 软件流控：接收水位过高 -> 通知对端暂停（XOFF），过低 -> 恢复（XON）
+    // 内核态禁用浮点（否则链接缺 _fltused），改用整数比较：
+    //   ratio >= 0.75 ⇔ avail/total >= 3/4 ⇔ avail*4 >= total*3
+    //   ratio <= 0.25 ⇔ avail/total <= 1/4 ⇔ avail*4 <= total
     SIZE_T avail = VspdBufAvailable(b, peer);
-    double ratio = (double)avail / (VSPD_BUFFER_SIZE - 1);
+    SIZE_T total = (SIZE_T)(VSPD_BUFFER_SIZE - 1);
+    SIZE_T q4 = avail * 4;
     if (b->FlowControl[peer] == 2) {
-        if (ratio >= 0.75) b->XoffActive[peer] = TRUE;
-        else if (ratio <= 0.25) b->XoffActive[peer] = FALSE;
+        if (q4 >= total * 3) b->XoffActive[peer] = TRUE;
+        else if (q4 <= total) b->XoffActive[peer] = FALSE;
     }
     // 硬件流控：接收满则撤销对端 RTS（即本端 CTS 不可接收）
-    if (b->FlowControl[peer] == 1 && ratio >= 0.75) b->RtsEnable[peer] = FALSE;
-    else if (b->FlowControl[peer] == 1 && ratio <= 0.25) b->RtsEnable[peer] = TRUE;
+    if (b->FlowControl[peer] == 1 && q4 >= total * 3) b->RtsEnable[peer] = FALSE;
+    else if (b->FlowControl[peer] == 1 && q4 <= total) b->RtsEnable[peer] = TRUE;
 
     WDFREQUEST pend = b->PendingRead[peer];
     if (pend && written > 0) b->PendingRead[peer] = NULL;
