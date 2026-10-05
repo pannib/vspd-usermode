@@ -20,9 +20,44 @@
 
 #include <ntddk.h>
 #include <wdf.h>
-#include <ntddser.h>   // 串口类型(SERIAL_BAUD_RATE/SERIAL_LINE_CONTROL 等)在 WDK10 中由 ntddser.h 提供，serial.h 已弃用
+#include <ntddser.h>   // IOCTL_SERIAL_* 及 SERIAL_BAUD_RATE/SERIAL_LINE_CONTROL/SERIAL_STATUS/SERIAL_COMMPROP
 #include <devpkey.h>
 #include <ntstrsafe.h>   // RtlUnicodeStringPrintf 等安全字符串函数
+
+// 传统串口寄存器/配置类型（SERIAL_MSR/MCR/DTRRTS/TIMEOUTS 及 SERIAL_PCF_* 位标志）在 WDK 26100 的
+// ntddser.h 中未提供（它们原属旧的 serial.h，新 WDK 默认 include 已不可用）。按 WDK 标准 ABI 补齐。
+// driver.c 以 ULONG 标量方式使用这些类型（如 *p |= SERIAL_MSR_CTS），故定义为 ULONG 别名。
+// 若将来 WDK 重新提供同名定义，#ifndef 可避免重定义冲突。
+#ifndef SERIAL_MSR
+typedef ULONG SERIAL_MSR;
+typedef ULONG SERIAL_MCR;
+typedef ULONG SERIAL_DTRRTS;
+#define SERIAL_MCR_RTS      0x02
+#define SERIAL_MCR_DTR      0x01
+#define SERIAL_MSR_CTS      0x10
+#define SERIAL_MSR_DSR      0x20
+#define SERIAL_MSR_RI       0x40
+#define SERIAL_MSR_DCD      0x80
+#define SERIAL_DTR_STATE    0x01
+#define SERIAL_RTS_STATE    0x02
+#endif
+#ifndef SERIAL_TIMEOUTS
+typedef struct _SERIAL_TIMEOUTS {
+    ULONG ReadIntervalTimeout;
+    ULONG ReadTotalTimeoutMultiplier;
+    ULONG ReadTotalTimeoutConstant;
+    ULONG WriteTotalTimeoutMultiplier;
+    ULONG WriteTotalTimeoutConstant;
+} SERIAL_TIMEOUTS, *PSERIAL_TIMEOUTS;
+#endif
+#ifndef SERIAL_PCF_DTRDSR
+#define SERIAL_PCF_DTRDSR        0x0001
+#define SERIAL_PCF_RTSCTS        0x0002
+#define SERIAL_PCF_XONXOFF       0x0004
+#define SERIAL_PCF_SETXCHAR      0x0008
+#define SERIAL_PCF_TOTALTIMING   0x0010
+#define SERIAL_PCF_INTTIMESTAMPS 0x0020
+#endif
 
 #define VSPD_POOL_TAG      'DpSV'
 #define VSPD_MAX_PAIRS     32
