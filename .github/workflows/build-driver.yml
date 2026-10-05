@@ -133,22 +133,22 @@ jobs:
           Write-Host "WDKContentRoot = $wdkContent"
           Write-Host "WindowsSdkDir  = $sdkDir"
 
+          # 重要：vcxproj 第 30 行是 $(VCTargetsPath)\Microsoft.Cpp.Default.props，
+          # 即调用方自己补了“\”，所以 VCTargetsPath MUST 不带结尾反斜杠（否则变成 v180\\\... → MSB4102）。
+          $vcTargetsNoSlash = $vcTargets.TrimEnd('\')
+
           $workspace = $env:GITHUB_WORKSPACE
 
-          # 关键修复：之前把带空格的长路径直接拼进 `cmd /c "..."` 的 msbuild 参数里，
-          # cmd 会把内层引号吃掉，长路径被拆成多个 token → MSB1008 "Only one project can be specified"。
-          # 解决：把全部 /p: 属性写进我们自己控制的响应文件 vspd_build.rsp（每行一个参数，值用引号包裹），
-          # 再用 /noautoresponse 关掉 LaunchBuildEnv 自动生成的、含拆碎长路径的 MSBuild.rsp，
-          # 最后显式 @vspd_build.rsp 传入。这样带空格的长路径不再经过 cmd 的引号解析。
+          # 路径传递策略（规避 cmd 对带空格长路径的引号拆解问题，此前引发 MSB1008 / MSB4102）：
+          #  - 4 个路径变量通过 `set "VAR=value"` 写成环境变量。cmd 的 set 语法能正确保留空格与结尾反斜杠，
+          #    MSBuild 会把这些环境变量当作全局属性读取，因此它们根本不出现在 msbuild 的命令行里，不会被 cmd 拆词。
+          #  - 仅把 Configuration/Platform/TargetVersion 这种无空格的简单参数放进 vspd_build.rsp。
+          #  - /noautoresponse 关掉 LaunchBuildEnv 自动生成的、含拆碎长路径的 MSBuild.rsp。
           $rspPath = Join-Path $workspace "vspd_build.rsp"
           $rspLines = @(
             "/p:Configuration=Release",
             "/p:Platform=x64",
             "/p:TargetVersion=Windows10",
-            "/p:VSINSTALLDIR=`"$vsInstall`"",
-            "/p:VCTargetsPath=`"$vcTargets`"",
-            "/p:WDKContentRoot=`"$wdkContent`"",
-            "/p:WindowsSdkDir=`"$sdkDir`"",
             "/v:normal"
           )
           Set-Content -Path $rspPath -Value $rspLines -Encoding ASCII
@@ -160,11 +160,10 @@ jobs:
           if (Test-Path $stray) { Write-Host "Removing stray MSBuild.rsp"; Remove-Item $stray -Force }
 
           Write-Host "Building driver inside EWDK environment ..."
-          # 1) call LaunchBuildEnv 继承 INCLUDE/LIB/PATH（编译器/链接器要用）
-          # 2) set 覆盖 LaunchBuildEnv 写错的 4 个变量（set "VAR=value" 语法可正确保留空格）
-          # 3) msbuild 全路径 + /noautoresponse + 显式 @rsp（绕开 PATH 与空格拆词问题）
+          # call LaunchBuildEnv 继承 INCLUDE/LIB/PATH（编译器/链接器要用），随后用 set 覆盖 4 个路径变量，
+          # 最后 msbuild 全路径 + /noautoresponse + @rsp 编译。
           $msbCmd = ('call "{0}" && cd /d "{1}" && set "VSINSTALLDIR={2}" && set "VCTargetsPath={3}" && set "WDKContentRoot={4}" && set "WindowsSdkDir={5}" && "{6}" /noautoresponse @vspd_build.rsp VSPD\Vspd.Driver\vspd.vcxproj' `
-                     -f $bat, $workspace, $vsInstall, $vcTargets, $wdkContent, $sdkDir, $msb.FullName)
+                     -f $bat, $workspace, $vsInstall, $vcTargetsNoSlash, $wdkContent, $sdkDir, $msb.FullName)
           Write-Host "MSBUILD CMD: $msbCmd"
           & cmd /c $msbCmd
           $buildExit = $LASTEXITCODE
