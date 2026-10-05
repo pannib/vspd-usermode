@@ -32,6 +32,9 @@
 typedef ULONG SERIAL_MSR;
 typedef ULONG SERIAL_MCR;
 typedef ULONG SERIAL_DTRRTS;
+typedef ULONG* PSERIAL_MSR;
+typedef ULONG* PSERIAL_MCR;
+typedef ULONG* PSERIAL_DTRRTS;
 #define SERIAL_MCR_RTS      0x02
 #define SERIAL_MCR_DTR      0x01
 #define SERIAL_MSR_CTS      0x10
@@ -50,12 +53,24 @@ typedef struct _SERIAL_TIMEOUTS {
     ULONG WriteTotalTimeoutConstant;
 } SERIAL_TIMEOUTS, *PSERIAL_TIMEOUTS;
 #endif
+// SERIAL_PCF_* 位标志逐个独立保护：ntddser.h 可能只定义其中一部分（如 DTRDSR/RTSCTS/XONXOFF），
+// 而 TOTALTIMING/INTTIMESTAMPS 等较新位缺失，故不能整块用单个 #ifndef 包裹。
 #ifndef SERIAL_PCF_DTRDSR
 #define SERIAL_PCF_DTRDSR        0x0001
+#endif
+#ifndef SERIAL_PCF_RTSCTS
 #define SERIAL_PCF_RTSCTS        0x0002
+#endif
+#ifndef SERIAL_PCF_XONXOFF
 #define SERIAL_PCF_XONXOFF       0x0004
+#endif
+#ifndef SERIAL_PCF_SETXCHAR
 #define SERIAL_PCF_SETXCHAR      0x0008
+#endif
+#ifndef SERIAL_PCF_TOTALTIMING
 #define SERIAL_PCF_TOTALTIMING   0x0010
+#endif
+#ifndef SERIAL_PCF_INTTIMESTAMPS
 #define SERIAL_PCF_INTTIMESTAMPS 0x0020
 #endif
 
