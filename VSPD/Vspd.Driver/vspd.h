@@ -21,6 +21,8 @@
 #include <ntddk.h>
 #include <wdf.h>
 #include <ntddser.h>   // IOCTL_SERIAL_* 及 SERIAL_BAUD_RATE/SERIAL_LINE_CONTROL/SERIAL_STATUS/SERIAL_COMMPROP
+#include <initguid.h>  // 必须放在 devpkey.h 之前：让 DEVPKEY_* 在本编译单元内实例化。
+                       // 否则它们在 devpkey.h 里只是 extern 声明，链接时会缺 DEVPKEY_Device_FriendlyName。
 #include <devpkey.h>
 #include <ntstrsafe.h>   // RtlUnicodeStringPrintf 等安全字符串函数
 
