@@ -20,7 +20,7 @@
 
 #include <ntddk.h>
 #include <wdf.h>
-#include <serial.h>
+#include <ntddser.h>   // 串口类型(SERIAL_BAUD_RATE/SERIAL_LINE_CONTROL 等)在 WDK10 中由 ntddser.h 提供，serial.h 已弃用
 #include <devpkey.h>
 #include <ntstrsafe.h>   // RtlUnicodeStringPrintf 等安全字符串函数
 
