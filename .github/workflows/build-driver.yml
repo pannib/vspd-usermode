@@ -16,8 +16,11 @@ name: Build VSPD Kernel Driver
 # VS2022 + WDK 是“正常安装”的，setup-msbuild 用 vswhere 找到它并正确初始化，
 # 不存在路径冲突，一次跑通。只传 Configuration/Platform/PlatformToolset，不覆盖任何环境变量。
 #
-# 注：windows-latest 当前为 Windows Server 2025 + WDK 10.0.26100（支持 KMDF 1.33）；
-#     windows-2022 为 WDK 10.0.22621（同样支持 KMDF 1.33）。两者均可，这里用 windows-latest。
+# 注：runner 选择的关键踩坑——windows-latest 当前实际是 Windows Server 2025 + Visual Studio 2026(v18/MSBuild 18)，
+#     而 WDK 工具集 WindowsKernelModeDriver10.0 是面向 VS2022(v17) 设计的，在 VS18 下不会被正确注册，
+#     导致 WDK 的 include 路径（含 ntddk.h）未加入编译命令行 → C1083。
+#     因此必须用 windows-2022：它“off the box”预装 VS2022(v17) + WDK 10.0.22621，
+#     WindowsKernelModeDriver10.0 工具集能正确激活，ntddk.h 等头文件路径自动就位。两者都支持 KMDF 1.33。
 
 on:
   workflow_dispatch:
@@ -32,7 +35,7 @@ permissions:
 
 jobs:
   build-driver:
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 60
 
     steps:
