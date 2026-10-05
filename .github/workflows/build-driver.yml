@@ -310,8 +310,11 @@ jobs:
           # 用 “$(VCTargetsPath)Platforms” 直接拼接、不补斜杠）。这两个值无空格，作为 /p: 全局属性
           # 直接放到命令行（不在 rsp：rsp 行尾反斜杠会被当续行符；命令行里反斜杠后跟空格则安全，不会转义引号）。
           # 末尾的空格确保 “\” 后不是引号，避免 cmd 转义。
-          $msbCmd = ('call "{0}" && cd /d "{1}" && set "VSINSTALLDIR={2}" && set "VCTargetsPath={3}" && set "CurrentVCTargetsPath={3}" && set "WDKContentRoot={4}" && set "WindowsSdkDir={5}" && "{6}" /noautoresponse /p:VCTargetsPath={3}\ /p:CurrentVCTargetsPath={3}\ @vspd_build.rsp VSPD\Vspd.Driver\vspd.vcxproj' `
-                     -f $bat, $workspace, $vsInstall, $vcTargetsNoSlash, $wdkContent, $sdkDir, $msb.FullName)
+          # VSINSTALLDIR 同样会被 Microsoft.Cpp.Default.props 重置成空（导致 MSVC 工具路径退化为 D:\ 根相对），
+          # 也必须作为全局属性锁死。它带空格且需结尾反斜杠：用 "/p:VSINSTALLDIR="..."\\" 形式
+          # （双反斜杠 + 关闭引号，cmd 传 "\\" 给 msbuild，msbuild 再规约为单个 "\"）。
+          $msbCmd = ('call "{0}" && cd /d "{1}" && set "VSINSTALLDIR={2}" && set "VCTargetsPath={3}" && set "CurrentVCTargetsPath={3}" && set "WDKContentRoot={4}" && set "WindowsSdkDir={5}" && "{6}" /noautoresponse /p:VCTargetsPath={3}\ /p:CurrentVCTargetsPath={3}\ /p:VSINSTALLDIR="{7}\\" @vspd_build.rsp VSPD\Vspd.Driver\vspd.vcxproj' `
+                     -f $bat, $workspace, $vsInstall, $vcTargetsNoSlash, $wdkContent, $sdkDir, $msb.FullName, ($vsInstall.TrimEnd('\')))
           Write-Host "MSBUILD CMD: $msbCmd"
           & cmd /c $msbCmd
           $buildExit = $LASTEXITCODE
