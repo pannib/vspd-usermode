@@ -20,14 +20,22 @@
     <None Include="vspd.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
-  <!-- 将内核驱动包（vspd.inf / vspd.sys 等）复制到输出目录的 Driver 子目录，
-       这样“开启驱动”按钮能在运行时找到驱动包。vspd.sys 需先通过 CI 或本地 WDK 构建。 -->
+  <!-- 将内核驱动产物（vspd.inf / vspd.sys / 测试证书）复制到输出目录的 Driver 子目录，
+       这样“开启驱动”按钮能在运行时找到驱动包。
+       只拷这三类产物，绝不再把整个源码目录（build.ps1 / driver.c / vcxproj …）一起拷进去。
+       vspd.sys 与 vspd-test.cer 通常由 CI 构建后随 Release 分发，本地未构建时不存在，
+       故用 ContinueOnError 容错（缺失时程序会走“从 Release 自动下载”那条路）。 -->
   <Target Name="CopyDriverPackage" AfterTargets="Build">
     <ItemGroup>
-      <_DrvFiles Include="$(MSBuildThisFileDirectory)..\Vspd.Driver\**\*" />
+      <_DrvFiles Include="$(MSBuildThisFileDirectory)..\Vspd.Driver\vspd.sys"
+                 Condition="Exists('$(MSBuildThisFileDirectory)..\Vspd.Driver\vspd.sys')" />
+      <_DrvFiles Include="$(MSBuildThisFileDirectory)..\Vspd.Driver\vspd.inf"
+                 Condition="Exists('$(MSBuildThisFileDirectory)..\Vspd.Driver\vspd.inf')" />
+      <_DrvFiles Include="$(MSBuildThisFileDirectory)..\Vspd.Driver\cert\vspd-test.cer"
+                 Condition="Exists('$(MSBuildThisFileDirectory)..\Vspd.Driver\cert\vspd-test.cer')" />
     </ItemGroup>
     <Copy SourceFiles="@(_DrvFiles)"
-          DestinationFiles="@(_DrvFiles->'$(OutDir)Driver\%(RecursiveDir)%(Filename)%(Extension)')"
+          DestinationFolder="$(OutDir)Driver"
           SkipUnchangedFiles="true" ContinueOnError="true" />
   </Target>
 
