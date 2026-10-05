@@ -22,6 +22,11 @@ public enum DriverState
     InstalledStopped,
     /// <summary>驱动服务正在运行，COM 端口已在设备管理器出现。</summary>
     Running,
+    /// <summary>
+    /// Secure Boot 已开启：Windows 不允许启用测试签名模式，故测试签名的内核驱动无法加载。
+    /// 这是"点了开启驱动却始终失败"最常见的真实原因，需用户在 BIOS/UEFI 中关闭 Secure Boot。
+    /// </summary>
+    SecureBootBlocked,
     /// <summary>当前平台不是 Windows，或查询失败。</summary>
     Unknown
 }
@@ -35,6 +40,7 @@ public enum EnableOutcome
     AlreadyRunning,   // 本来就在运行
     RebootRequired,   // 已开启测试签名，需重启后再次点击“开启驱动”
     PackageMissing,   // 找不到驱动包
+    SecureBootBlocked,// Secure Boot 开启，无法启用测试签名（需进 BIOS 关闭，非权限问题）
     Failed            // 其它失败（详情见 Message）
 }
 
@@ -54,6 +60,21 @@ public sealed class DriverManager
     private const string SvcName = "vspd";
     // 控制通道（驱动加载后创建 \\.\VspdBus）
     private const string BusPath = @"\\.\VspdBus";
+
+    /// <summary>
+    /// Secure Boot 拦截测试签名时给用户的操作指引。抽成常量是为了让状态提示、按钮反馈、
+    /// 弹窗三处文案保持一致，且不会各自漂移。
+    /// </summary>
+    public const string SecureBootGuidance =
+        "安全引导（Secure Boot）已开启，Windows 不允许开启测试签名模式，因此测试签名的内核驱动无法加载。" +
+        "这是本次失败的真实原因，与用户权限无关，重试也不会成功。\n" +
+        "解决办法（任选其一）：\n" +
+        "  ① 关机后重新开机，开机出现厂商 Logo 时连按 F2 / F1 / Fn+F2 进入 BIOS(UEFI) 设置 → " +
+        "在 Security（或 Boot / Authentication）页把 Secure Boot 改为 Disabled → 保存退出（通常 F10）→ " +
+        "回到 Windows 后再次点「开启驱动」；\n" +
+        "  ② 改动 Secure Boot 前请留意：若系统启用了 BitLocker，修改该选项可能要求输入 BitLocker 恢复密钥，" +
+        "请先确认已备份恢复密钥；\n" +
+        "  ③ 不想动 BIOS：直接使用左侧「虚拟串口对」功能即可（进程内虚拟串口，无需任何驱动，当前已可用）。";
 
     /// <summary>驱动包所在目录（包含 vspd.sys 与 vspd.inf）。可在构造时指定。</summary>
     public string PackageDir { get; }
@@ -113,6 +134,15 @@ public sealed class DriverManager
     public async Task<DriverState> GetStateAsync()
     {
         if (!OperatingSystem.IsWindows()) return DriverState.Unknown;
+
+        // 驱动已经跑起来 -> 直接 Running（此时 Secure Boot 状态与它无关）
+        if (IsDriverPresent()) return DriverState.Running;
+
+        // Secure Boot 开启 -> 测试签名模式无法启用 -> 测试签名的驱动注定装不上/加载不了。
+        // 把它放在"包缺失"之前：即便包已就位，这才是拦路的那道门，优先明确告知，
+        // 免得用户反复点「开启驱动」却只看到含义模糊的“已安装但未开启”。
+        if (SecureBootInfo.IsEnabled() == true) return DriverState.SecureBootBlocked;
+
         if (!PackagePresent) return DriverState.PackageMissing;
 
         var (code, output) = await RunProcess("sc", $"query {SvcName}").ConfigureAwait(false);
@@ -127,8 +157,11 @@ public sealed class DriverManager
     }
 
     /// <summary>
-    /// 开启驱动：测试签名检测 -> pnputil 安装 -> sc start。
-    /// 返回结果供 UI 提示；若需要重启（测试签名首次开启）会返回 RebootRequired。
+    /// 开启驱动：按需自动下载驱动包 -> 提权执行安装（测试签名检测 / 证书导入 /
+    /// 根枚举设备创建 / 真实校验控制通道）。
+    /// 返回结果供 UI 提示：
+    ///   RebootRequired  —— 本次刚开启测试签名，需重启后再点一次；
+    ///   SecureBootBlocked —— Secure Boot 拦截，无法启用测试签名，需进 BIOS 关闭。
     /// </summary>
     [SupportedOSPlatform("windows")]
     public async Task<(EnableOutcome Outcome, string Message)> EnableAsync()
@@ -171,6 +204,7 @@ public sealed class DriverManager
             "REBOOT_REQUIRED" => (EnableOutcome.RebootRequired,
                 "已开启测试签名模式，请重启电脑后再次点击“开启驱动”。"),
             "PACKAGE_NOT_FOUND" => (EnableOutcome.PackageMissing, "包内缺少 vspd.sys/vspd.inf。"),
+            "SECUREBOOT_BLOCKED" => (EnableOutcome.SecureBootBlocked, SecureBootGuidance),
             _ when detail.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase)
                 => (EnableOutcome.Failed, detail[6..].Trim()),
             _ => (EnableOutcome.Failed, "未知返回：" + detail)
