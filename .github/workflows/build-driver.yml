@@ -220,6 +220,42 @@ jobs:
           }
           Write-Host "DIAG final VCTargetsPath = $vcTargetsNoSlash"
 
+          # ===== DIAG2：直接打印 Microsoft.CppBuild.targets 473 行附近的 MSB8020 判定逻辑 =====
+          $cppTargets = Join-Path $vcTargetsNoSlash "Microsoft.CppBuild.targets"
+          if (Test-Path $cppTargets) {
+            $lines = Get-Content $cppTargets
+            Write-Host "===== Microsoft.CppBuild.targets [460..500] ====="
+            for ($i = 459; $i -lt [Math]::Min(500, $lines.Length); $i++) {
+              Write-Host ("  CppBuild[{0}]: {1}" -f ($i+1), $lines[$i])
+            }
+            Write-Host "===== end CppBuild dump ====="
+          } else {
+            Write-Host "DIAG2: $cppTargets NOT FOUND"
+          }
+
+          # ===== DIAG3：用最小 msbuild 工程探测 MSBuild 真正解析出的 $(_Platform) / $(VCTargetsPath) / 工具集 Exists 结果 =====
+          $probe = @'
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Platform>x64</Platform>
+    <PlatformToolset></PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <Target Name="Probe">
+    <Message Text="PROBE _Platform=[$(_Platform)]" Importance="high" />
+    <Message Text="PROBE Platform=[$(Platform)]" Importance="high" />
+    <Message Text="PROBE VCTargetsPath=[$(VCTargetsPath)]" Importance="high" />
+    <Message Text="PROBE Exists_x64=[$([MSBuild]::Exists('$(VCTargetsPath)Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0'))]" Importance="high" />
+    <Message Text="PROBE ExistsProps_x64=[$([MSBuild]::Exists('$(VCTargetsPath)Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0\WindowsKernelModeDriver10.0.props'))]" Importance="high" />
+  </Target>
+</Project>
+'@
+          $probePath = Join-Path $workspace "probe_toolset.proj"
+          Set-Content -Path $probePath -Value $probe -Encoding UTF8
+          Write-Host "===== PROBE msbuild run ====="
+          & cmd /c ("call `"" + $bat + "`" && cd /d `"" + $workspace + "`" && set `"VSINSTALLDIR=" + $vsInstall + "`" && set `"VCTargetsPath=" + $vcTargetsNoSlash + "`" && set `"WDKContentRoot=" + $wdkContent + "`" && set `"WindowsSdkDir=" + $sdkDir + "`" && `"" + $msb.FullName + "`" /noautoresponse probe_toolset.proj /t:Probe /p:Platform=x64 /v:normal")
+          Write-Host "===== end PROBE ====="
+
           $workspace = $env:GITHUB_WORKSPACE
 
           # 路径传递策略（规避 cmd 对带空格长路径的引号拆解问题，此前引发 MSB1008 / MSB4102）：
