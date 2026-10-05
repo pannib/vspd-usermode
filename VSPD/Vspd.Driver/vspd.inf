@@ -44,6 +44,19 @@ AddService = vspd, 0x00000002, Vspd_Service_Inst
 [VspdPort_Install.Services]
 AddService = vspd, 0x00000002, Vspd_Service_Inst
 
+; ---- KMDF 框架绑定声明（必需）----
+; 微软要求所有 KMDF 驱动的 INF 必须包含 DDInstall.Wdf 段，向系统声明本驱动
+; 绑定到 KMDF 框架及其库版本。缺失时设备无法启动（设备管理器错误码 39 /
+; “Windows 无法加载这个硬件的设备驱动程序”）。版本与 vcxproj 的 <KmdfVersion> 一致。
+[VspdBus_Install.NT.Wdf]
+KmdfService = vspd, Vspd_wdfsect
+
+[VspdPort_Install.NT.Wdf]
+KmdfService = vspd, Vspd_wdfsect
+
+[Vspd_wdfsect]
+KmdfLibraryVersion = 1.33
+
 [Vspd_Service_Inst]
 DisplayName   = %SvcDesc%
 ServiceType  = 1           ; SERVICE_KERNEL_DRIVER
