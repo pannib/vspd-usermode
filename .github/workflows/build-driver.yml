@@ -279,11 +279,16 @@ jobs:
           # 解决：把 VCTargetsPath / CurrentVCTargetsPath 作为 /p: 全局属性写进 rsp——
           # 全局属性无法被任何 <PropertyGroup> 覆盖，从而锁死正确路径。
           # 这两个值均无空格（D:\a\_temp\vc180），可直接安全放入 rsp。
+          # PlatformToolset 必须也作为全局属性传入：vcxproj 自身在 Microsoft.Cpp.props
+          # 导入“之后”才设置 PlatformToolset，导致导入阶段 VC 链回退到默认工具集（v100），
+          # 而该默认目录在我们的 KMDF-only 副本中并不存在 → Toolset.props 找不到（MSB4019）。
+          # 作为全局属性传入可在导入前即生效，使 _ToolsetPropsPath 落到 WindowsKernelModeDriver10.0。
           $rspLines = @(
             "/p:Configuration=Release",
             "/p:Platform=x64",
             "/p:_Platform=x64",
             "/p:_ToolsetFound=true",
+            "/p:PlatformToolset=WindowsKernelModeDriver10.0",
             "/p:VCTargetsPath=$vcTargetsNoSlash",
             "/p:CurrentVCTargetsPath=$vcTargetsNoSlash",
             "/p:TargetVersion=Windows10",
