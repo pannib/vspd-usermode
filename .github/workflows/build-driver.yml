@@ -98,10 +98,56 @@ jobs:
           if (-not $msb) { Write-Error "MSBuild.exe not found on EWDK drive $drive"; Dismount-DiskImage -ImagePath $iso -ErrorAction SilentlyContinue; exit 1 }
           Write-Host ("Using MSBuild: " + $msb.FullName)
 
+          # 该版 EWDK 的 LaunchBuildEnv 会把 VSINSTALLDIR / VCTargetsPath 设成“缺盘符”的路径
+          # （例如 \Microsoft Visual Studio\18\BuildTools\...，相对当前盘 D:），导致 MSBuild 找不到
+          # v180\Microsoft.Cpp.Default.props。所以这里先定位 EWDK 内真实的绝对路径，再覆盖这些变量。
+          # VSINSTALLDIR = MSBuild.exe 上溯 4 级（Bin -> Current -> MSBuild -> BuildTools）
+          $vsInstall = $msb.FullName
+          for ($i = 0; $i -lt 4; $i++) { $vsInstall = Split-Path $vsInstall -Parent }
+          if (-not $vsInstall.EndsWith('\')) { $vsInstall += '\' }
+
+          # VCTargetsPath：直接找 Microsoft.Cpp.Default.props 所在目录
+          $vcProps = Get-ChildItem -Path "$drive\" -Recurse -Filter Microsoft.Cpp.Default.props -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($vcProps) { $vcTargets = $vcProps.DirectoryName.TrimEnd('\') + '\' }
+          else { $vcTargets = Join-Path $vsInstall "MSBuild\Microsoft\VC\v180\" }
+
+          # WDKContentRoot：找 WindowsDriver.Common.targets（位于 ...\WDK\Build\ 下）
+          $wdkTargets = Get-ChildItem -Path "$drive\" -Recurse -Filter WindowsDriver.Common.targets -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($wdkTargets) {
+            $wdkContent = (Split-Path $wdkTargets.DirectoryName -Parent).TrimEnd('\') + '\'
+          } else {
+            $wdkContent = Join-Path $drive "Program Files\Windows Kits\WDK\"
+          }
+
+          # WindowsSdkDir：找 Windows Kits\10 下的 Windows.h
+          $sdkH = Get-ChildItem -Path "$drive\" -Recurse -Filter Windows.h -ErrorAction SilentlyContinue |
+                   Where-Object { $_.FullName -match 'Windows Kits\\10\\Include\\' } | Select-Object -First 1
+          if ($sdkH) {
+            $sdkDir = (Split-Path (Split-Path $sdkH.DirectoryName -Parent) -Parent).TrimEnd('\') + '\'
+          } else {
+            $sdkDir = Join-Path $drive "Program Files\Windows Kits\10\"
+          }
+
+          Write-Host "VSINSTALLDIR   = $vsInstall"
+          Write-Host "VCTargetsPath  = $vcTargets"
+          Write-Host "WDKContentRoot = $wdkContent"
+          Write-Host "WindowsSdkDir  = $sdkDir"
+
           $workspace = $env:GITHUB_WORKSPACE
           Write-Host "Building driver inside EWDK environment ..."
-          # call LaunchBuildEnv 以继承 INCLUDE/LIB/WDK 等编译环境变量；msbuild 用全路径（绕过 PATH 缺失）
-          & cmd /c ("call `"$bat`" && set PATH=`"$($msb.DirectoryName)`";%PATH% && cd /d `"$workspace`" && `"$($msb.FullName)`" VSPD\Vspd.Driver\vspd.vcxproj /p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10 /p:PlatformToolset=WindowsKernelModeDriver10.0 /v:normal")
+          # 1) call LaunchBuildEnv 继承 INCLUDE/LIB/PATH（编译器/链接器要用）
+          # 2) 用上面探测到的绝对路径覆盖掉 LaunchBuildEnv 写错的 VSINSTALLDIR / VCTargetsPath / WDKContentRoot / WindowsSdkDir
+          # 3) 用 MSBuild 全路径编译（绕过该版 EWDK 不把 msbuild 放进 PATH 的问题）
+          & cmd /c ("call `"$bat`" && " +
+                    "set `"VSINSTALLDIR=$vsInstall`" && " +
+                    "set `"VCTargetsPath=$vcTargets`" && " +
+                    "set `"WDKContentRoot=$wdkContent`" && " +
+                    "set `"WindowsSdkDir=$sdkDir`" && " +
+                    "cd /d `"$workspace`" && " +
+                    "`"$($msb.FullName)`" VSPD\Vspd.Driver\vspd.vcxproj " +
+                    "/p:Configuration=Release /p:Platform=x64 /p:TargetVersion=Windows10 " +
+                    "/p:VSINSTALLDIR=`"$vsInstall`" /p:VCTargetsPath=`"$vcTargets`" " +
+                    "/p:WDKContentRoot=`"$wdkContent`" /p:WindowsSdkDir=`"$sdkDir`" /v:normal")
           $buildExit = $LASTEXITCODE
           Write-Host "msbuild exit code: $buildExit"
 
