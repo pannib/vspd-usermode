@@ -165,39 +165,62 @@ jobs:
 
           # ===== 自愈：EWDK 2026 的 KMDF 工具集目录仅含 Toolset.props/.targets，
           # 而 MSBuild 18 按 “<PlatformToolset>.props” 规则查找 WindowsKernelModeDriver10.0.props，
-          # 缺失该文件会触发 MSB8020。这里为工具集补上同名 wrapper（优先就地写入，
-          # 若 ISO 只读则把 v180 拷到可写目录后写入并改用该副本作为 VCTargetsPath）。=====
-          $kmdTs = Join-Path $vcTargets "platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0"
-          $kmdProps = Join-Path $kmdTs "WindowsKernelModeDriver10.0.props"
-          $kmdTargets = Join-Path $kmdTs "WindowsKernelModeDriver10.0.targets"
-          $wrapperProps = '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003"><Import Project="Toolset.props" /></Project>'
-          $wrapperTargets = '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003"><Import Project="Toolset.targets" /></Project>'
-          if ((Test-Path $kmdProps) -or (-not (Test-Path (Join-Path $kmdTs "Toolset.props")))) {
-            Write-Host "KMDF toolset wrapper already present or Toolset.props missing; skip self-heal."
-          } else {
-            Write-Host "KMDF toolset dir has Toolset.props but no WindowsKernelModeDriver10.0.props; creating wrapper."
-            try {
-              Set-Content -Path $kmdProps -Value $wrapperProps -Encoding UTF8
-              Set-Content -Path $kmdTargets -Value $wrapperTargets -Encoding UTF8
-              Write-Host "Wrapper created in place at $kmdTs"
-            } catch {
-              Write-Warning "In-place write failed (read-only ISO): $_ ; copying v180 to writable dir."
-              $wk = Join-Path $env:RUNNER_TEMP "vc180"
-              if (-not (Test-Path $wk)) {
-                Write-Host "Copying $vcTargets -> $wk ..."
-                Copy-Item -Path $vcTargets -Destination $wk -Recurse -Force
-              }
-              $kmdTs2 = Join-Path $wk "platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0"
-              Set-Content -Path (Join-Path $kmdTs2 "WindowsKernelModeDriver10.0.props") -Value $wrapperProps -Encoding UTF8
-              Set-Content -Path (Join-Path $kmdTs2 "WindowsKernelModeDriver10.0.targets") -Value $wrapperTargets -Encoding UTF8
-              $vcTargets = $wk
-              Write-Host "VCTargetsPath repointed to writable copy: $vcTargets"
-            }
+          # 缺失该文件会触发 MSB8020。这里为工具集补上同名 wrapper，并：
+          #  - 始终在可写副本（RUNNER_TEMP\vc180）上操作（ISO 只读）；
+          #  - 若副本里工具集目录漏拷（ISO junction/长路径），显式补拷 Platforms；
+          #  - 为所有平台（x64/Win32/ARM64/ARM）补齐工具集目录，避免 MSBuild 在其它 $(Platform) 下报 MSB8020；
+          #  - 一并导入 WDK 真正的 KMDF 工具集定义（Windows Kits\10\build\<ver>\WDK.x64.WindowsKernelModeDriver.props）。=====
+          # 找到 WDK 真正的 KMDF 工具集定义文件
+          $wdkKm = Get-ChildItem -Path "$drive\" -Recurse -Filter WDK.x64.WindowsKernelModeDriver.props -ErrorAction SilentlyContinue | Select-Object -First 1
+          $wdkKmPath = if ($wdkKm) { $wdkKm.FullName } else { $null }
+          $wdkKmTargets = if ($wdkKmPath) { $wdkKmPath.Replace('.props', '.targets') } else { $null }
+          Write-Host "WDK KM props: $wdkKmPath"
+          Write-Host "WDK KM targets: $wdkKmTargets"
+
+          # 1) 把整个 v180 拷到可写目录（ISO 只读，无法就地写 wrapper）
+          $wk = Join-Path $env:RUNNER_TEMP "vc180"
+          if (-not (Test-Path $wk)) {
+            Write-Host "Copying $vcTargets -> $wk ..."
+            Copy-Item -Path $vcTargets -Destination $wk -Recurse -Force
           }
+          # 2) 防御：确保工具集目录确实进入副本
+          $kmdTs2 = Join-Path $wk "platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0"
+          if (-not (Test-Path $kmdTs2)) {
+            Write-Host "Toolset dir missing in copy; copying Platforms explicitly ..."
+            Copy-Item -Path (Join-Path $vcTargets "platforms") -Destination (Join-Path $wk "platforms") -Recurse -Force
+          }
+          # 3) 写 wrapper（导入 Toolset.props + WDK 的 KMDF 工具集定义）
+          $wrapperProps = '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">' +
+                          '<Import Project="Toolset.props" />' +
+                          (if ($wdkKmPath) { '<Import Project="' + $wdkKmPath + '" />' } else { '' }) +
+                          '</Project>'
+          $wrapperTargets = '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">' +
+                            '<Import Project="Toolset.targets" />' +
+                            (if ($wdkKmTargets) { '<Import Project="' + $wdkKmTargets + '" Condition="Exists(' + "'" + $wdkKmTargets + "'" + ')" />' } else { '' }) +
+                            '</Project>'
+          Set-Content -Path (Join-Path $kmdTs2 "WindowsKernelModeDriver10.0.props") -Value $wrapperProps -Encoding UTF8
+          Set-Content -Path (Join-Path $kmdTs2 "WindowsKernelModeDriver10.0.targets") -Value $wrapperTargets -Encoding UTF8
+          Write-Host "Wrapper written in copy at $kmdTs2"
+          # 4) 为所有平台补齐工具集目录（保险：避免 $(Platform) 不是 x64 时报 MSB8020）
+          foreach ($p in @("Win32", "x64", "ARM64", "ARM")) {
+            $dst = Join-Path $wk ("platforms\" + $p + "\PlatformToolsets\WindowsKernelModeDriver10.0")
+            if (-not (Test-Path $dst)) { New-Item -ItemType Directory -Path $dst -Force | Out-Null }
+            Copy-Item -Path (Join-Path $kmdTs2 "*") -Destination $dst -Force -ErrorAction SilentlyContinue
+          }
+          $vcTargets = $wk
+          Write-Host "VCTargetsPath repointed to writable copy: $vcTargets"
 
           # 重要：vcxproj 第 30 行是 $(VCTargetsPath)\Microsoft.Cpp.Default.props，
           # 即调用方自己补了“\”，所以 VCTargetsPath MUST 不带结尾反斜杠（否则变成 v180\\\... → MSB4102）。
           $vcTargetsNoSlash = $vcTargets.TrimEnd('\')
+
+          # DIAG：确认最终 VCTargetsPath 下 x64 工具集目录存在、且含 wrapper（定位 MSB8020 是否因副本漏拷/平台不符）
+          $finalTs = Join-Path $vcTargetsNoSlash "Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0"
+          Write-Host "DIAG final toolset dir = $finalTs ; exists = $(Test-Path $finalTs)"
+          if (Test-Path $finalTs) {
+            Get-ChildItem $finalTs | ForEach-Object { Write-Host ("  DIAG tsfile: " + $_.Name) }
+          }
+          Write-Host "DIAG final VCTargetsPath = $vcTargetsNoSlash"
 
           $workspace = $env:GITHUB_WORKSPACE
 
