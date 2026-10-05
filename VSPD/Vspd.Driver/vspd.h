@@ -44,15 +44,7 @@ typedef ULONG* PSERIAL_DTRRTS;
 #define SERIAL_DTR_STATE    0x01
 #define SERIAL_RTS_STATE    0x02
 #endif
-#ifndef SERIAL_TIMEOUTS
-typedef struct _SERIAL_TIMEOUTS {
-    ULONG ReadIntervalTimeout;
-    ULONG ReadTotalTimeoutMultiplier;
-    ULONG ReadTotalTimeoutConstant;
-    ULONG WriteTotalTimeoutMultiplier;
-    ULONG WriteTotalTimeoutConstant;
-} SERIAL_TIMEOUTS, *PSERIAL_TIMEOUTS;
-#endif
+// SERIAL_TIMEOUTS 由 ntddser.h 提供，无需自定（避免重定义）。
 // SERIAL_PCF_* 位标志逐个独立保护：ntddser.h 可能只定义其中一部分（如 DTRDSR/RTSCTS/XONXOFF），
 // 而 TOTALTIMING/INTTIMESTAMPS 等较新位缺失，故不能整块用单个 #ifndef 包裹。
 #ifndef SERIAL_PCF_DTRDSR
