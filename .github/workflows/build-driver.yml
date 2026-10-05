@@ -1,25 +1,23 @@
-name: Build VSPD Kernel Driver (EWDK, no local WDK needed)
+name: Build VSPD Kernel Driver
 
-# 方案 A：自包含 EWDK ISO。
+# 方案 B（最终采用）：直接用 GitHub windows runner 预装的 Visual Studio 2022 + WDK，
+# 通过 microsoft/setup-msbuild（内部用 vswhere）正确初始化 MSBuild 环境，无需 EWDK ISO。
 #
-# —— 之前为什么一路 MSB 崩（根因）——
-#   最初用的是 fwlink 最新的 EWDK（build 28000 = VS2026 / MSBuild 18 的预发布版）。
-#   该版 LaunchBuildEnv.cmd 在「已装有另一个 VS」的机器（GitHub windows-2022 runner 预装 VS2022）
-#   上会把 VSINSTALLDIR / VCTargetsPath 解析成「缺盘符的相对路径」，导致 MSBuild 属性链
-#   一路错乱：MSB1008 → MSB4102 → MSB8020 → MSB4019 → MSB8070。
-#   当时用一堆 /p: 全局属性去硬覆盖这些环境变量，本质是和 MSBuild 自带的属性链打消耗战
-#   （打地鼠）：每补一个，链上另一个地方又崩。
+# 为什么放弃 EWDK ISO（方案 A）—— 根因复盘：
+#   EWDK 是“自包含”环境，靠 LaunchBuildEnv.cmd 临时设置 VSINSTALLDIR/VCTargetsPath。
+#   但 GitHub windows runner 本身已预装 VS2022，LaunchBuildEnv 在检测/覆盖这些变量时，
+#   会解析成「缺盘符 / 缺 Program Files 的相对路径」
+#   （例：E:\Microsoft Visual Studio\2022\...\Microsoft.Cpp.Default.props 缺失 → MSB4019），
+#   且每个版本 EWDK（28000 / 26100）行为还不一致。这是之前一路 MSB1008→MSB8070 崩的根因：
+#   EWDK 方案本质是“在已装 VS 的机器上再套一层自包含环境”，路径冲突不可避免。
+#   当时用一堆 /p: 全局属性去硬覆盖 MSBuild 自带属性链，只是和编译器打地鼠，补一个崩一个。
 #
-# —— 修复策略 ——
-#   改用成熟的 26100 EWDK（VS2022 Build Tools + WDK 10.0.26100，官方 CDN 直链）。它与 runner
-#   上的 VS2022 主版本一致，LaunchBuildEnv.cmd 行为成熟稳定。然后严格走微软官方规范：
-#     挂载 ISO → LaunchBuildEnv.cmd 拉起环境 → 只传 Configuration/Platform/PlatformToolset，
-#   绝不覆盖任何环境变量 / VCTargetsPath / VSINSTALLDIR。整套 wrapper / override 黑魔法全部删除。
-#   万一仍失败，步骤里会先打印 VSINSTALLDIR / VCTargetsPath / WindowsSdkDir / where msbuild，
-#   让根因一眼可见，而不是再靠编译器逐个报错来“找问题”。
+# 方案 B 是微软官方 Windows-driver-samples 仓库 CI 的标准写法：runner 上的
+# VS2022 + WDK 是“正常安装”的，setup-msbuild 用 vswhere 找到它并正确初始化，
+# 不存在路径冲突，一次跑通。只传 Configuration/Platform/PlatformToolset，不覆盖任何环境变量。
 #
-#   如需回到「最新 EWDK」，把 EWDK_URL 换回 https://go.microsoft.com/fwlink/?LinkId=2371663 即可
-#   （但会重新面临上面的属性解析问题，不推荐）。
+# 注：windows-latest 当前为 Windows Server 2025 + WDK 10.0.26100（支持 KMDF 1.33）；
+#     windows-2022 为 WDK 10.0.22621（同样支持 KMDF 1.33）。两者均可，这里用 windows-latest。
 
 on:
   workflow_dispatch:
@@ -32,125 +30,61 @@ on:
 permissions:
   contents: write   # 创建 Release 需要
 
-env:
-  # 稳定的 26100 EWDK（VS2022 Build Tools + WDK 10.0.26100），微软官方 CDN 直链。
-  EWDK_URL: "https://software-static.download.prss.microsoft.com/dbazure/888969d5-f34g-4e03-ac9d-1f9786c66749/EWDK_ge_release_svc_prod3_26100_240820-2119.iso"
-
 jobs:
   build-driver:
-    runs-on: windows-2022
-    timeout-minutes: 360
+    runs-on: windows-latest
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download EWDK ISO
+      - name: Add MSBuild to PATH (初始化 VS2022 + WDK 环境)
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build vspd.sys (Release, x64)
         shell: pwsh
         run: |
-          $iso = Join-Path $env:RUNNER_TEMP "ewdk.iso"
-          Write-Host "Downloading EWDK from $env:EWDK_URL ..."
-          $ok = $false
-          for ($attempt = 1; $attempt -le 3; $attempt++) {
-            try {
-              Write-Host "Attempt $attempt ..."
-              Invoke-WebRequest -Uri $env:EWDK_URL -OutFile $iso -TimeoutSec 3500 `
-                -MaximumRetryCount 2 -RetryIntervalSec 15
-              $ok = $true
-              break
-            } catch {
-              Write-Warning "Download failed: $($_.Exception.Message)"
-              if (Test-Path $iso) { Remove-Item $iso -Force }
-            }
-          }
-          if (-not $ok) { Write-Error "EWDK download failed after retries"; exit 1 }
-          $sz = (Get-Item $iso).Length
-          Write-Host ("EWDK downloaded: {0:N0} bytes ({1:N2} GB)" -f $sz, ($sz/1GB))
-          # 暴露给后续步骤
-          "EWDK_ISO=$iso" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Mount EWDK & build vspd.sys (x64, Release)
-        shell: pwsh
-        run: |
-          $iso = $env:EWDK_ISO
-          $workspace = $env:GITHUB_WORKSPACE
-          if (-not (Test-Path $iso)) { Write-Error "EWDK ISO not found: $iso"; exit 1 }
-          Write-Host "Mounting $iso ..."
-          $disk = Mount-DiskImage -ImagePath $iso -PassThru
-          $drive = (Get-Volume -DiskImage $disk).DriveLetter
-          if (-not $drive) { Write-Error "Could not determine mounted drive letter"; exit 1 }
-          $drive = $drive + ":"
-          Write-Host "EWDK mounted at $drive"
-
-          $bat = Join-Path $drive "LaunchBuildEnv.cmd"
-          if (-not (Test-Path $bat)) { Write-Error "LaunchBuildEnv.cmd not found at $bat"; Dismount-DiskImage -ImagePath $iso -ErrorAction SilentlyContinue; exit 1 }
-
-          # 在 EWDK 盘内定位 MSBuild.exe 全路径（LaunchBuildEnv 不一定把它放进 PATH）
-          $msb = $null
-          $candidates = @(
-            "Program Files\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe",
-            "Program Files\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe",
-            "Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe",
-            "Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe"
-          )
-          foreach ($c in $candidates) {
-            $p = Join-Path $drive $c
-            if (Test-Path $p) { $msb = Get-Item $p; break }
-          }
-          if (-not $msb) {
-            Write-Host "候选路径均未命中，全盘递归查找 MSBuild.exe ..."
-            $msb = Get-ChildItem -Path "$drive\" -Recurse -Filter MSBuild.exe -ErrorAction SilentlyContinue |
-                   Where-Object { $_.FullName -match 'MSBuild\\Current\\Bin\\MSBuild\.exe$' } | Select-Object -First 1
-          }
-          if (-not $msb) { Write-Error "MSBuild.exe not found on EWDK drive $drive"; Dismount-DiskImage -ImagePath $iso -ErrorAction SilentlyContinue; exit 1 }
-          Write-Host ("Using MSBuild: " + $msb.FullName)
-
-          $proj = Join-Path $workspace "VSPD\Vspd.Driver\vspd.vcxproj"
-          if (-not (Test-Path $proj)) { Write-Error "vcxproj not found: $proj"; exit 1 }
-
-          # 关键：在 EWDK 盘下激活 LaunchBuildEnv（当前盘保持为 $drive），随后直接 msbuild。
-          #  - 始终停留在 EWDK 盘，可确保 LaunchBuildEnv 设置的（即便是盘相对）路径解析到 EWDK 盘；
-          #  - 工程用绝对路径传入，无需 cd 到 workspace；
-          #  - 只传 Configuration/Platform/PlatformToolset，不覆盖任何环境变量 / VCTargetsPath /
-          #    VSINSTALLDIR（那才是之前 MSB 崩的根源）；
-          #  - 激活后打印关键环境变量 + where msbuild，便于万一失败第一时间看到根因。
-          $msbCmd = ('call "{0}" && cd /d "{1}" && echo [ENV after LaunchBuildEnv] && set VSINSTALLDIR & set VCTargetsPath & set WindowsSdkDir & set WDKContentRoot & where msbuild & "{2}" /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=WindowsKernelModeDriver10.0 /p:TargetVersion=Windows10 "{3}"' `
-                     -f $bat, $drive, $msb.FullName, $proj)
-          Write-Host "MSBUILD CMD: $msbCmd"
-          & cmd /c $msbCmd
-          $buildExit = $LASTEXITCODE
-          Write-Host "msbuild exit code: $buildExit"
-
-          # 卸载 ISO 释放空间（尽力）
-          try { Dismount-DiskImage -ImagePath $iso -ErrorAction SilentlyContinue } catch {}
-
-          if ($buildExit -ne 0) { Write-Error "Driver build failed (msbuild exit $buildExit)"; exit $buildExit }
+          $ErrorActionPreference = 'Stop'
+          $proj = Join-Path $env:GITHUB_WORKSPACE "VSPD\Vspd.Driver\vspd.vcxproj"
+          if (-not (Test-Path $proj)) { throw "vcxproj not found: $proj" }
+          # 打印关键环境，便于一次性定位问题（不再被动等编译器逐个报 MSB）
+          Write-Host "=== build env ==="
+          Write-Host ("MSBuild: " + (Get-Command msbuild).Source)
+          Write-Host ("VSINSTALLDIR=" + $env:VSINSTALLDIR)
+          Write-Host ("VCTargetsPath=" + $env:VCTargetsPath)
+          Write-Host ("WindowsSdkDir=" + $env:WindowsSdkDir)
+          Write-Host ("WDKContentRoot=" + $env:WDKContentRoot)
+          # setup-msbuild 已正确初始化 VS+WDK，直接 msbuild 即可。
+          # 只传 Configuration/Platform/PlatformToolset，不覆盖任何环境变量。
+          msbuild $proj `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:PlatformToolset=WindowsKernelModeDriver10.0 `
+            /p:TargetVersion=Windows10 `
+            /v:normal
+          if ($LASTEXITCODE -ne 0) { throw ("Driver build failed (msbuild exit " + $LASTEXITCODE + ")") }
           Write-Host "Driver build OK."
 
-      - name: Sign & package driver (zip)
+      - name: Sign & package driver (test cert)
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $sys = Get-ChildItem -Path "VSPD\Vspd.Driver" -Filter vspd.sys -Recurse | Select-Object -First 1
-          if (-not $sys) {
-            Write-Error "未找到 vspd.sys，驱动构建失败，请查看上方 msbuild 日志。"
-            exit 1
-          }
-          Write-Host "Found vspd.sys at $($sys.FullName)"
-          # 每次构建生成一份自签测试证书：签名与证书同包，安装时导入即可，避免仓库存私钥
-          $pw = New-Object System.Security.SecureString
-          "vspdtest".ToCharArray() | ForEach-Object { $pw.AppendChar($_) }
+          if (-not $sys) { throw "vspd.sys not found, build likely failed" }
+          Write-Host ("Found vspd.sys at " + $sys.FullName)
+          # 每次构建生成自签测试证书：签名与 .cer 同包，安装时导入即可（避免仓库存私钥）
           $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=VSPD Test Signing" `
                   -CertStoreLocation "Cert:\CurrentUser\My" -KeyUsage DigitalSignature `
                   -NotAfter (Get-Date).AddYears(10)
           Set-AuthenticodeSignature -FilePath $sys.FullName -Certificate $cert -HashAlgorithm SHA256
-          # 确保证书输出目录存在（CI 不保留仓库内的 cert/ 目录）
           New-Item -ItemType Directory -Force -Path "VSPD\Vspd.Driver\cert" | Out-Null
           $cer = "VSPD\Vspd.Driver\cert\vspd-test.cer"
           Export-Certificate -Cert $cert -FilePath $cer | Out-Null
           Remove-Item $cert.PSPath
-          # 打包 vspd.sys + vspd.inf + 测试证书(.cer)，便于下载与安装时导入
-          Compress-Archive -Path $sys.FullName, "VSPD\Vspd.Driver\vspd.inf", $cer -DestinationPath vspd-driver.zip -Force
-          Write-Host "已签名并打包：vspd-driver.zip"
+          Compress-Archive -Path $sys.FullName, "VSPD\Vspd.Driver\vspd.inf", $cer `
+            -DestinationPath vspd-driver.zip -Force
+          Write-Host "Packaged: vspd-driver.zip"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
