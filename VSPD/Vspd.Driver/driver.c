@@ -536,7 +536,7 @@ NTSTATUS VspdEvtDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit)
     // 子设备列表（动态枚举 COM PDO）
     WDF_CHILD_LIST_CONFIG clc;
     WDF_CHILD_LIST_CONFIG_INIT(&clc, sizeof(CHILD_ID), VspdEvtChildListCreateDevice);
-    status = WdfChildListCreate(busDevice, &clc, &g_ChildList);
+    status = WdfChildListCreate(busDevice, &clc, WDF_NO_OBJECT_ATTRIBUTES, &g_ChildList);
     if (!NT_SUCCESS(status)) return status;
 
     // 控制设备（\\.\VspdBus）：用户态程序用它新增/删除端口对
