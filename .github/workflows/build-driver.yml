@@ -1,16 +1,25 @@
 name: Build VSPD Kernel Driver (EWDK, no local WDK needed)
 
-# 方案 A：无需在本机安装 WDK。
-# GitHub 的 windows-2022 Runner 预装的 VS 不允许“modify 加装 WDK”(vs_installer 立即 exit 1)，
-# 因此改用微软官方「自包含 EWDK ISO」：下载后挂载，用 ISO 自带的 LaunchBuildEnv.cmd
-# 拉起 EWDK 自带的构建环境（编译器/链接器/msbuild/WDK 目标全在里面），直接 msbuild。
+# 方案 A：自包含 EWDK ISO。
 #
-# 构建完成后：
-#   - 每次构建自动生成一份自签测试证书，对 vspd.sys 做“测试签名”（不往仓库存私钥）
-#   - 打包 vspd.sys + vspd.inf + vspd-test.cer 为 vspd-driver.zip
-#   - 发布到 Artifacts 与 GitHub Release（附件 vspd-driver.zip）
-# 用户侧软件点「开启驱动」会自动：从 Release 下载该 zip → 导入证书 → 开启测试签名 → 安装并启动，
-# 端口随即出现在「设备管理器 → 端口(COM 和 LPT)」。
+# —— 之前为什么一路 MSB 崩（根因）——
+#   最初用的是 fwlink 最新的 EWDK（build 28000 = VS2026 / MSBuild 18 的预发布版）。
+#   该版 LaunchBuildEnv.cmd 在「已装有另一个 VS」的机器（GitHub windows-2022 runner 预装 VS2022）
+#   上会把 VSINSTALLDIR / VCTargetsPath 解析成「缺盘符的相对路径」，导致 MSBuild 属性链
+#   一路错乱：MSB1008 → MSB4102 → MSB8020 → MSB4019 → MSB8070。
+#   当时用一堆 /p: 全局属性去硬覆盖这些环境变量，本质是和 MSBuild 自带的属性链打消耗战
+#   （打地鼠）：每补一个，链上另一个地方又崩。
+#
+# —— 修复策略 ——
+#   改用成熟的 26100 EWDK（VS2022 Build Tools + WDK 10.0.26100，官方 CDN 直链）。它与 runner
+#   上的 VS2022 主版本一致，LaunchBuildEnv.cmd 行为成熟稳定。然后严格走微软官方规范：
+#     挂载 ISO → LaunchBuildEnv.cmd 拉起环境 → 只传 Configuration/Platform/PlatformToolset，
+#   绝不覆盖任何环境变量 / VCTargetsPath / VSINSTALLDIR。整套 wrapper / override 黑魔法全部删除。
+#   万一仍失败，步骤里会先打印 VSINSTALLDIR / VCTargetsPath / WindowsSdkDir / where msbuild，
+#   让根因一眼可见，而不是再靠编译器逐个报错来“找问题”。
+#
+#   如需回到「最新 EWDK」，把 EWDK_URL 换回 https://go.microsoft.com/fwlink/?LinkId=2371663 即可
+#   （但会重新面临上面的属性解析问题，不推荐）。
 
 on:
   workflow_dispatch:
@@ -24,9 +33,8 @@ permissions:
   contents: write   # 创建 Release 需要
 
 env:
-  # 官方 EWDK 永久跳转链接（302 跳转到 download.microsoft.com 上的 ISO）。
-  # 如需指定具体版本可改成直接的 download.microsoft.com 链接。
-  EWDK_FWURL: "https://go.microsoft.com/fwlink/?LinkId=2371663"
+  # 稳定的 26100 EWDK（VS2022 Build Tools + WDK 10.0.26100），微软官方 CDN 直链。
+  EWDK_URL: "https://software-static.download.prss.microsoft.com/dbazure/888969d5-f34g-4e03-ac9d-1f9786c66749/EWDK_ge_release_svc_prod3_26100_240820-2119.iso"
 
 jobs:
   build-driver:
@@ -41,24 +49,22 @@ jobs:
         shell: pwsh
         run: |
           $iso = Join-Path $env:RUNNER_TEMP "ewdk.iso"
-          Write-Host "Downloading EWDK from $env:EWDK_FWURL ..."
-          $dest = $iso
-          $url = $env:EWDK_FWURL
+          Write-Host "Downloading EWDK from $env:EWDK_URL ..."
           $ok = $false
           for ($attempt = 1; $attempt -le 3; $attempt++) {
             try {
               Write-Host "Attempt $attempt ..."
-              Invoke-WebRequest -Uri $url -OutFile $dest -TimeoutSec 3500 `
+              Invoke-WebRequest -Uri $env:EWDK_URL -OutFile $iso -TimeoutSec 3500 `
                 -MaximumRetryCount 2 -RetryIntervalSec 15
               $ok = $true
               break
             } catch {
               Write-Warning "Download failed: $($_.Exception.Message)"
-              if (Test-Path $dest) { Remove-Item $dest -Force }
+              if (Test-Path $iso) { Remove-Item $iso -Force }
             }
           }
           if (-not $ok) { Write-Error "EWDK download failed after retries"; exit 1 }
-          $sz = (Get-Item $dest).Length
+          $sz = (Get-Item $iso).Length
           Write-Host ("EWDK downloaded: {0:N0} bytes ({1:N2} GB)" -f $sz, ($sz/1GB))
           # 暴露给后续步骤
           "EWDK_ISO=$iso" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -79,12 +85,12 @@ jobs:
           $bat = Join-Path $drive "LaunchBuildEnv.cmd"
           if (-not (Test-Path $bat)) { Write-Error "LaunchBuildEnv.cmd not found at $bat"; Dismount-DiskImage -ImagePath $iso -ErrorAction SilentlyContinue; exit 1 }
 
-          # 该版 EWDK 的 LaunchBuildEnv 不会把 msbuild 放进 PATH，因此在盘内定位 MSBuild.exe 全路径
+          # 在 EWDK 盘内定位 MSBuild.exe 全路径（LaunchBuildEnv 不一定把它放进 PATH）
           $msb = $null
           $candidates = @(
-            "Program Files\Microsoft Visual Studio\2026\BuildTools\MSBuild\Current\Bin\MSBuild.exe",
-            "Program Files\Microsoft Visual Studio\2026\Professional\MSBuild\Current\Bin\MSBuild.exe",
             "Program Files\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe",
+            "Program Files\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe",
+            "Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe",
             "Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe"
           )
           foreach ($c in $candidates) {
@@ -99,222 +105,17 @@ jobs:
           if (-not $msb) { Write-Error "MSBuild.exe not found on EWDK drive $drive"; Dismount-DiskImage -ImagePath $iso -ErrorAction SilentlyContinue; exit 1 }
           Write-Host ("Using MSBuild: " + $msb.FullName)
 
-          # 该版 EWDK 的 LaunchBuildEnv 会把 VSINSTALLDIR / VCTargetsPath 设成“缺盘符”的路径
-          # （例如 \Microsoft Visual Studio\18\BuildTools\...，相对当前盘 D:），导致 MSBuild 找不到
-          # v180\Microsoft.Cpp.Default.props。所以这里先定位 EWDK 内真实的绝对路径，再覆盖这些变量。
-          # VSINSTALLDIR = MSBuild.exe 上溯 4 级（Bin -> Current -> MSBuild -> BuildTools）
-          $vsInstall = $msb.FullName
-          for ($i = 0; $i -lt 4; $i++) { $vsInstall = Split-Path $vsInstall -Parent }
-          if (-not $vsInstall.EndsWith('\')) { $vsInstall += '\' }
+          $proj = Join-Path $workspace "VSPD\Vspd.Driver\vspd.vcxproj"
+          if (-not (Test-Path $proj)) { Write-Error "vcxproj not found: $proj"; exit 1 }
 
-          # VCTargetsPath：必须指向“含有 WindowsKernelModeDriver10.0（KMDF）工具集”的 VC 目标目录。
-          # 直接找 Microsoft.Cpp.Default.props 可能只保证 props 存在、却未必包含 WDK 驱动工具集，导致 MSB8020。
-          # 因此优先全盘定位 WindowsKernelModeDriver10.0.props（驱动工具集定义文件），
-          # 其典型路径： <VCTargetsPath>\Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0\WindowsKernelModeDriver10.0.props
-          # => VCTargetsPath = 该文件目录上溯 4 级（PlatformToolsets -> x64 -> Platforms -> <vXXX>）。
-          $toolsetProps = Get-ChildItem -Path "$drive\" -Recurse -Filter WindowsKernelModeDriver10.0.props -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($toolsetProps) {
-            $vcTargets = (Split-Path (Split-Path (Split-Path $toolsetProps.DirectoryName -Parent) -Parent) -Parent)
-            Write-Host "Located KMDF toolset props: $($toolsetProps.FullName)"
-          } else {
-            # 兜底：用 Microsoft.Cpp.Default.props 推断（仍可能因缺工具集失败，但先保证 VCTargetsPath 合法）
-            $vcProps = Get-ChildItem -Path "$drive\" -Recurse -Filter Microsoft.Cpp.Default.props -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($vcProps) { $vcTargets = $vcProps.DirectoryName.TrimEnd('\') }
-            else { $vcTargets = Join-Path $vsInstall "MSBuild\Microsoft\VC\v180" }
-          }
-
-          # WDKContentRoot：找 WindowsDriver.Common.targets（位于 ...\WDK\Build\ 下）
-          $wdkTargets = Get-ChildItem -Path "$drive\" -Recurse -Filter WindowsDriver.Common.targets -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($wdkTargets) {
-            $wdkContent = (Split-Path $wdkTargets.DirectoryName -Parent).TrimEnd('\') + '\'
-          } else {
-            $wdkContent = Join-Path $drive "Program Files\Windows Kits\WDK\"
-          }
-
-          # WindowsSdkDir：找 Windows Kits\10 下的 Windows.h
-          $sdkH = Get-ChildItem -Path "$drive\" -Recurse -Filter Windows.h -ErrorAction SilentlyContinue |
-                   Where-Object { $_.FullName -match 'Windows Kits\\10\\Include\\' } | Select-Object -First 1
-          if ($sdkH) {
-            $sdkDir = (Split-Path (Split-Path $sdkH.DirectoryName -Parent) -Parent).TrimEnd('\') + '\'
-          } else {
-            $sdkDir = Join-Path $drive "Program Files\Windows Kits\10\"
-          }
-
-          # 诊断：确认 KMDF 工具集确实位于我们给定的 VCTargetsPath 下；否则列出全盘位置便于排查/自动修正
-          $expectedTs = Join-Path $vcTargets "Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0"
-          if (-not (Test-Path $expectedTs)) {
-            Write-Warning "未在 $expectedTs 找到 KMDF 工具集，全盘排查 PlatformToolsets ..."
-            $allTs = Get-ChildItem -Path "$drive\" -Recurse -Filter WindowsKernelModeDriver10.0.props -ErrorAction SilentlyContinue
-            $allTs | ForEach-Object { Write-Host "  toolset found: $($_.FullName)" }
-            if ($allTs.Count -eq 0) {
-              Write-Error "EWDK 镜像未包含 WindowsKernelModeDriver10.0 工具集，请更换 EWDK 版本/下载链接。"
-              Dismount-DiskImage -ImagePath $iso -ErrorAction SilentlyContinue
-              exit 1
-            }
-            # 工具集位于其它 VCTargetsPath：改用它
-            $alt = (Split-Path (Split-Path (Split-Path $allTs[0].DirectoryName -Parent) -Parent) -Parent)
-            Write-Host "改用检测到的工具集所在 VCTargetsPath: $alt"
-            $vcTargets = $alt
-          } else {
-            Write-Host "KMDF toolset confirmed at: $expectedTs"
-          }
-
-          Write-Host "VSINSTALLDIR   = $vsInstall"
-          Write-Host "VCTargetsPath  = $vcTargets"
-          Write-Host "WDKContentRoot = $wdkContent"
-          Write-Host "WindowsSdkDir  = $sdkDir"
-
-          # ===== 自愈：EWDK 2026 的 KMDF 工具集目录仅含 Toolset.props/.targets，
-          # 而 MSBuild 18 按 “<PlatformToolset>.props” 规则查找 WindowsKernelModeDriver10.0.props，
-          # 缺失该文件会触发 MSB8020。这里为工具集补上同名 wrapper，并：
-          #  - 始终在可写副本（RUNNER_TEMP\vc180）上操作（ISO 只读）；
-          #  - 若副本里工具集目录漏拷（ISO junction/长路径），显式补拷 Platforms；
-          #  - 为所有平台（x64/Win32/ARM64/ARM）补齐工具集目录，避免 MSBuild 在其它 $(Platform) 下报 MSB8020；
-          #  - 一并导入 WDK 真正的 KMDF 工具集定义（Windows Kits\10\build\<ver>\WDK.x64.WindowsKernelModeDriver.props）。=====
-          # 找到 WDK 真正的 KMDF 工具集定义文件
-          $wdkKm = Get-ChildItem -Path "$drive\" -Recurse -Filter WDK.x64.WindowsKernelModeDriver.props -ErrorAction SilentlyContinue | Select-Object -First 1
-          $wdkKmPath = if ($wdkKm) { $wdkKm.FullName } else { $null }
-          $wdkKmTargets = if ($wdkKmPath) { $wdkKmPath.Replace('.props', '.targets') } else { $null }
-          Write-Host "WDK KM props: $wdkKmPath"
-          Write-Host "WDK KM targets: $wdkKmTargets"
-
-          # 1) 把整个 v180 拷到可写目录（ISO 只读，无法就地写 wrapper）
-          $wk = Join-Path $env:RUNNER_TEMP "vc180"
-          if (-not (Test-Path $wk)) {
-            Write-Host "Copying $vcTargets -> $wk ..."
-            Copy-Item -Path $vcTargets -Destination $wk -Recurse -Force
-          }
-          # 2) 防御：确保工具集目录确实进入副本
-          $kmdTs2 = Join-Path $wk "platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0"
-          if (-not (Test-Path $kmdTs2)) {
-            Write-Host "Toolset dir missing in copy; copying Platforms explicitly ..."
-            Copy-Item -Path (Join-Path $vcTargets "platforms") -Destination (Join-Path $wk "platforms") -Recurse -Force
-          }
-          # 3) 写 wrapper（导入 Toolset.props + WDK 的 KMDF 工具集定义）
-          $wdkImportProps = if ($wdkKmPath) { '<Import Project="' + $wdkKmPath + '" />' } else { '' }
-          $wdkImportTargets = if ($wdkKmTargets) { '<Import Project="' + $wdkKmTargets + '" Condition="Exists(' + "'" + $wdkKmTargets + "'" + ')" />' } else { '' }
-          $wrapperProps = '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">' +
-                          '<PropertyGroup><_ToolsetFound>true</_ToolsetFound></PropertyGroup>' +
-                          '<Import Project="Toolset.props" />' + $wdkImportProps + '</Project>'
-          $wrapperTargets = '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">' +
-                            '<Import Project="Toolset.targets" />' + $wdkImportTargets + '</Project>'
-          Set-Content -Path (Join-Path $kmdTs2 "WindowsKernelModeDriver10.0.props") -Value $wrapperProps -Encoding UTF8
-          Set-Content -Path (Join-Path $kmdTs2 "WindowsKernelModeDriver10.0.targets") -Value $wrapperTargets -Encoding UTF8
-          Write-Host "Wrapper written in copy at $kmdTs2"
-          # 4) 为所有平台补齐工具集目录（保险：避免 $(Platform) 不是 x64 时报 MSB8020）
-          foreach ($p in @("Win32", "x64", "ARM64", "ARM")) {
-            $dst = Join-Path $wk ("platforms\" + $p + "\PlatformToolsets\WindowsKernelModeDriver10.0")
-            if (-not (Test-Path $dst)) { New-Item -ItemType Directory -Path $dst -Force | Out-Null }
-            Copy-Item -Path (Join-Path $kmdTs2 "*") -Destination $dst -Force -ErrorAction SilentlyContinue
-          }
-          $vcTargets = $wk
-          Write-Host "VCTargetsPath repointed to writable copy: $vcTargets"
-
-          # 说明：VCTargetsPath 必须“带”结尾反斜杠（部分 props 如 ToolsetLocation.props 用
-          # “$(VCTargetsPath)Platforms” 直接拼接、不补斜杠）。vcxproj 自补的
-          # “$(VCTargetsPath)\Microsoft.Cpp.Default.props” 会变成双反斜杠，Windows 容忍。
-          # $vcTargetsNoSlash 仅用于下面 PowerShell 侧拼接路径（Join-Path 自带分隔符），
-          # msbuild 实际使用的带斜杠值由命令行 /p:VCTargetsPath=... 提供。
-          $vcTargetsNoSlash = $vcTargets.TrimEnd('\')
-
-          # DIAG：确认最终 VCTargetsPath 下 x64 工具集目录存在、且含 wrapper（定位 MSB8020 是否因副本漏拷/平台不符）
-          $finalTs = Join-Path $vcTargetsNoSlash "Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0"
-          Write-Host "DIAG final toolset dir = $finalTs ; exists = $(Test-Path $finalTs)"
-          if (Test-Path $finalTs) {
-            Get-ChildItem $finalTs | ForEach-Object { Write-Host ("  DIAG tsfile: " + $_.Name) }
-          }
-          Write-Host "DIAG final VCTargetsPath = $vcTargetsNoSlash"
-
-          # ===== DIAG2：直接打印 Microsoft.CppBuild.targets 473 行附近的 MSB8020 判定逻辑 =====
-          $cppTargets = Join-Path $vcTargetsNoSlash "Microsoft.CppBuild.targets"
-          if (Test-Path $cppTargets) {
-            $lines = Get-Content $cppTargets
-            Write-Host "===== Microsoft.CppBuild.targets [460..500] ====="
-            for ($i = 459; $i -lt [Math]::Min(500, $lines.Length); $i++) {
-              Write-Host ("  CppBuild[{0}]: {1}" -f ($i+1), $lines[$i])
-            }
-            Write-Host "===== end CppBuild dump ====="
-          } else {
-            Write-Host "DIAG2: $cppTargets NOT FOUND"
-          }
-
-          # ===== DIAG3：最小 msbuild 工程探测 MSBuild 真正解析出的 $(_Platform) =====
-          # 注意：用「单行单引号字符串数组 + -join "`n"」构造 .proj，避免 here-string 的 '离列问题破坏 YAML 缩进。
-          $probeLines = @(
-            '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">',
-            '  <PropertyGroup>',
-            '    <Platform>x64</Platform>',
-            '    <PlatformToolset></PlatformToolset>',
-            '  </PropertyGroup>',
-            '  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />',
-            '  <Target Name="Probe">',
-            '    <Message Text="PROBE _Platform=[$(_Platform)]" Importance="high" />',
-            '    <Message Text="PROBE Platform=[$(Platform)]" Importance="high" />',
-            '    <Message Text="PROBE VCTargetsPath=[$(VCTargetsPath)]" Importance="high" />',
-            '    <Message Text="PROBE CurrentVCTargetsPath=[$(CurrentVCTargetsPath)]" Importance="high" />',
-            '  </Target>',
-            '</Project>'
-          )
-          $probePath = Join-Path $workspace "probe_toolset.proj"
-          Set-Content -Path $probePath -Value ($probeLines -join "`n") -Encoding UTF8
-          Write-Host "===== PROBE msbuild run ====="
-          & cmd /c ("call `"" + $bat + "`" && cd /d `"" + $workspace + "`" && set `"VSINSTALLDIR=" + $vsInstall + "`" && set `"VCTargetsPath=" + $vcTargetsNoSlash + "`" && set `"CurrentVCTargetsPath=" + $vcTargetsNoSlash + "`" && set `"WDKContentRoot=" + $wdkContent + "`" && set `"WindowsSdkDir=" + $sdkDir + "`" && `"" + $msb.FullName + "`" /noautoresponse probe_toolset.proj /t:Probe /p:Configuration=Release /p:Platform=x64 /v:normal")
-          Write-Host "===== end PROBE ====="
-
-          # 路径传递策略（规避 cmd 对带空格长路径的引号拆解问题，此前引发 MSB1008 / MSB4102）：
-          #  - 4 个路径变量通过 `set "VAR=value"` 写成环境变量。cmd 的 set 语法能正确保留空格与结尾反斜杠，
-          #    MSBuild 会把这些环境变量当作全局属性读取，因此它们根本不出现在 msbuild 的命令行里，不会被 cmd 拆词。
-          #  - 仅把 Configuration/Platform/TargetVersion 这种无空格的简单参数放进 vspd_build.rsp。
-          #  - /noautoresponse 关掉 LaunchBuildEnv 自动生成的、含拆碎长路径的 MSBuild.rsp。
-          $rspPath = Join-Path $workspace "vspd_build.rsp"
-          # 关键修复（MSB8020 根因）：该版 EWDK 的 props 链不会把 $(Platform) 推导成 $(_Platform)，
-          # 导致 Microsoft.Cpp.props 里“工具集 .props 的 Exists 检查”路径变成
-          #   $(VCTargetsPath)\Platforms\\PlatformToolsets\...  （缺 x64，双反斜杠）
-          # Exists 落空 → WindowsKernelModeDriver10.0.props（我们的 wrapper）不被导入 →
-          # _ToolsetFound 恒为 false → MSB8020。
-          # 解决：显式把 _Platform=x64（让工具集导入路径正确解析）与 _ToolsetFound=true
-          # （兜底通过 MSB8020 判定）作为全局属性传入；两者均为无空格简单值，适合放进 rsp。
-          # 关键修复（MSB4019 / VCTargetsPath 被 props 链重置）：
-          # 该版 EWDK 的 Microsoft.Cpp.Default.props 会“重新推导” VCTargetsPath（甚至 CurrentVCTargetsPath）
-          # 成一个缺盘符的相对路径，从而把 $(VCTargetsPath)\Microsoft.Cpp.Platform.props 解析成
-          #   \Microsoft.Cpp.Platform.props → D:\Microsoft.Cpp.Platform.props （找不到 → MSB4019）。
-          # 之前用 `set "VCTargetsPath=..."` 环境变量传入，但 props 链会把它覆盖掉。
-          # 解决：把 VCTargetsPath / CurrentVCTargetsPath 作为 /p: 全局属性写进 rsp——
-          # 全局属性无法被任何 <PropertyGroup> 覆盖，从而锁死正确路径。
-          # 这两个值均无空格（D:\a\_temp\vc180），可直接安全放入 rsp。
-          # PlatformToolset 必须也作为全局属性传入：vcxproj 自身在 Microsoft.Cpp.props
-          # 导入“之后”才设置 PlatformToolset，导致导入阶段 VC 链回退到默认工具集（v100），
-          # 而该默认目录在我们的 KMDF-only 副本中并不存在 → Toolset.props 找不到（MSB4019）。
-          # 作为全局属性传入可在导入前即生效，使 _ToolsetPropsPath 落到 WindowsKernelModeDriver10.0。
-          $rspLines = @(
-            "/p:Configuration=Release",
-            "/p:Platform=x64",
-            "/p:_Platform=x64",
-            "/p:_ToolsetFound=true",
-            "/p:PlatformToolset=WindowsKernelModeDriver10.0",
-            "/p:TargetVersion=Windows10",
-            "/v:normal"
-          )
-          Set-Content -Path $rspPath -Value $rspLines -Encoding ASCII
-          Write-Host "Wrote response file: $rspPath"
-          Get-Content $rspPath | ForEach-Object { Write-Host "  rsp> $_" }
-
-          # 防御：清掉当前目录可能存在的 LaunchBuildEnv 自动 MSBuild.rsp（含拆碎的长路径）
-          $stray = Join-Path $workspace "MSBuild.rsp"
-          if (Test-Path $stray) { Write-Host "Removing stray MSBuild.rsp"; Remove-Item $stray -Force }
-
-          Write-Host "Building driver inside EWDK environment ..."
-          # call LaunchBuildEnv 继承 INCLUDE/LIB/PATH（编译器/链接器要用），随后用 set 覆盖 4 个路径变量，
-          # 最后 msbuild 全路径 + /noautoresponse + @rsp 编译。
-          # VCTargetsPath / CurrentVCTargetsPath 必须带结尾反斜杠（部分 props 如 ToolsetLocation.props
-          # 用 “$(VCTargetsPath)Platforms” 直接拼接、不补斜杠）。这两个值无空格，作为 /p: 全局属性
-          # 直接放到命令行（不在 rsp：rsp 行尾反斜杠会被当续行符；命令行里反斜杠后跟空格则安全，不会转义引号）。
-          # 末尾的空格确保 “\” 后不是引号，避免 cmd 转义。
-          # VSINSTALLDIR 同样会被 Microsoft.Cpp.Default.props 重置成空（导致 MSVC 工具路径退化为 D:\ 根相对），
-          # 也必须作为全局属性锁死。它带空格且需结尾反斜杠：用 "/p:VSINSTALLDIR="..."\\" 形式
-          # （双反斜杠 + 关闭引号，cmd 传 "\\" 给 msbuild，msbuild 再规约为单个 "\"）。
-          $msbCmd = ('call "{0}" && cd /d "{1}" && set "VSINSTALLDIR={2}" && set "VCTargetsPath={3}" && set "CurrentVCTargetsPath={3}" && set "WDKContentRoot={4}" && set "WindowsSdkDir={5}" && "{6}" /noautoresponse /p:VCTargetsPath={3}\ /p:CurrentVCTargetsPath={3}\ /p:VSINSTALLDIR="{7}\\" @vspd_build.rsp VSPD\Vspd.Driver\vspd.vcxproj' `
-                     -f $bat, $workspace, $vsInstall, $vcTargetsNoSlash, $wdkContent, $sdkDir, $msb.FullName, ($vsInstall.TrimEnd('\')))
+          # 关键：在 EWDK 盘下激活 LaunchBuildEnv（当前盘保持为 $drive），随后直接 msbuild。
+          #  - 始终停留在 EWDK 盘，可确保 LaunchBuildEnv 设置的（即便是盘相对）路径解析到 EWDK 盘；
+          #  - 工程用绝对路径传入，无需 cd 到 workspace；
+          #  - 只传 Configuration/Platform/PlatformToolset，不覆盖任何环境变量 / VCTargetsPath /
+          #    VSINSTALLDIR（那才是之前 MSB 崩的根源）；
+          #  - 激活后打印关键环境变量 + where msbuild，便于万一失败第一时间看到根因。
+          $msbCmd = ('call "{0}" && cd /d "{1}" && echo [ENV after LaunchBuildEnv] && set VSINSTALLDIR & set VCTargetsPath & set WindowsSdkDir & set WDKContentRoot & where msbuild & "{2}" /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=WindowsKernelModeDriver10.0 /p:TargetVersion=Windows10 "{3}"' `
+                     -f $bat, $drive, $msb.FullName, $proj)
           Write-Host "MSBUILD CMD: $msbCmd"
           & cmd /c $msbCmd
           $buildExit = $LASTEXITCODE
