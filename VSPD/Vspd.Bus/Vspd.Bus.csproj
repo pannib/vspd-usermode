@@ -8,4 +8,12 @@
     <RootNamespace>Vspd.Bus</RootNamespace>
   </PropertyGroup>
 
+  <!-- 允许单元测试访问 internal 成员（如 DriverManager.ShouldTryDownload），以便对
+       “缺包时是否应自动下载”的判定做回归测试。 -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>Vspd.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
 </Project>
