@@ -106,10 +106,21 @@ jobs:
           for ($i = 0; $i -lt 4; $i++) { $vsInstall = Split-Path $vsInstall -Parent }
           if (-not $vsInstall.EndsWith('\')) { $vsInstall += '\' }
 
-          # VCTargetsPath：直接找 Microsoft.Cpp.Default.props 所在目录
-          $vcProps = Get-ChildItem -Path "$drive\" -Recurse -Filter Microsoft.Cpp.Default.props -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($vcProps) { $vcTargets = $vcProps.DirectoryName.TrimEnd('\') + '\' }
-          else { $vcTargets = Join-Path $vsInstall "MSBuild\Microsoft\VC\v180\" }
+          # VCTargetsPath：必须指向“含有 WindowsKernelModeDriver10.0（KMDF）工具集”的 VC 目标目录。
+          # 直接找 Microsoft.Cpp.Default.props 可能只保证 props 存在、却未必包含 WDK 驱动工具集，导致 MSB8020。
+          # 因此优先全盘定位 WindowsKernelModeDriver10.0.props（驱动工具集定义文件），
+          # 其典型路径： <VCTargetsPath>\Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0\WindowsKernelModeDriver10.0.props
+          # => VCTargetsPath = 该文件目录上溯 4 级（PlatformToolsets -> x64 -> Platforms -> <vXXX>）。
+          $toolsetProps = Get-ChildItem -Path "$drive\" -Recurse -Filter WindowsKernelModeDriver10.0.props -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($toolsetProps) {
+            $vcTargets = (Split-Path (Split-Path (Split-Path $toolsetProps.DirectoryName -Parent) -Parent) -Parent)
+            Write-Host "Located KMDF toolset props: $($toolsetProps.FullName)"
+          } else {
+            # 兜底：用 Microsoft.Cpp.Default.props 推断（仍可能因缺工具集失败，但先保证 VCTargetsPath 合法）
+            $vcProps = Get-ChildItem -Path "$drive\" -Recurse -Filter Microsoft.Cpp.Default.props -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($vcProps) { $vcTargets = $vcProps.DirectoryName.TrimEnd('\') }
+            else { $vcTargets = Join-Path $vsInstall "MSBuild\Microsoft\VC\v180" }
+          }
 
           # WDKContentRoot：找 WindowsDriver.Common.targets（位于 ...\WDK\Build\ 下）
           $wdkTargets = Get-ChildItem -Path "$drive\" -Recurse -Filter WindowsDriver.Common.targets -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -126,6 +137,25 @@ jobs:
             $sdkDir = (Split-Path (Split-Path $sdkH.DirectoryName -Parent) -Parent).TrimEnd('\') + '\'
           } else {
             $sdkDir = Join-Path $drive "Program Files\Windows Kits\10\"
+          }
+
+          # 诊断：确认 KMDF 工具集确实位于我们给定的 VCTargetsPath 下；否则列出全盘位置便于排查/自动修正
+          $expectedTs = Join-Path $vcTargets "Platforms\x64\PlatformToolsets\WindowsKernelModeDriver10.0"
+          if (-not (Test-Path $expectedTs)) {
+            Write-Warning "未在 $expectedTs 找到 KMDF 工具集，全盘排查 PlatformToolsets ..."
+            $allTs = Get-ChildItem -Path "$drive\" -Recurse -Filter WindowsKernelModeDriver10.0.props -ErrorAction SilentlyContinue
+            $allTs | ForEach-Object { Write-Host "  toolset found: $($_.FullName)" }
+            if ($allTs.Count -eq 0) {
+              Write-Error "EWDK 镜像未包含 WindowsKernelModeDriver10.0 工具集，请更换 EWDK 版本/下载链接。"
+              Dismount-DiskImage -ImagePath $iso -ErrorAction SilentlyContinue
+              exit 1
+            }
+            # 工具集位于其它 VCTargetsPath：改用它
+            $alt = (Split-Path (Split-Path (Split-Path $allTs[0].DirectoryName -Parent) -Parent) -Parent)
+            Write-Host "改用检测到的工具集所在 VCTargetsPath: $alt"
+            $vcTargets = $alt
+          } else {
+            Write-Host "KMDF toolset confirmed at: $expectedTs"
           }
 
           Write-Host "VSINSTALLDIR   = $vsInstall"
