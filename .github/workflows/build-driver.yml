@@ -163,6 +163,29 @@ jobs:
           Write-Host "WDKContentRoot = $wdkContent"
           Write-Host "WindowsSdkDir  = $sdkDir"
 
+          # ===== DIAG：排查 KMDF 工具集真实位置（EWDK 可能把驱动工具集放在不同的 VC 版本目录）=====
+          Write-Host "===== DIAG BEGIN ====="
+          $vcRoot = Split-Path $vcTargets -Parent   # ...\MSBuild\Microsoft\VC
+          Write-Host "DIAG vcRoot = $vcRoot"
+          Write-Host "DIAG VC versions:"
+          Get-ChildItem $vcRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("  DIAG vcver: " + $_.Name) }
+          Write-Host "DIAG x64 PlatformToolsets (under each vcver):"
+          Get-ChildItem $vcRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            $ts = Join-Path $_.FullName "Platforms\x64\PlatformToolsets"
+            if (Test-Path $ts) {
+              Get-ChildItem $ts -Directory -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("  DIAG toolset[" + $_.FullName + "]") }
+            }
+          }
+          Write-Host "DIAG expected toolset dir contents:"
+          if (Test-Path $expectedTs) {
+            Get-ChildItem $expectedTs -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("  DIAG infile: " + $_.Name) }
+          } else { Write-Host "  DIAG expected dir NOT present" }
+          Write-Host "DIAG search whole drive for *KernelModeDriver* :"
+          Get-ChildItem -Path "$drive\" -Recurse -Filter *KernelModeDriver* -ErrorAction SilentlyContinue | Select-Object -First 40 | ForEach-Object { Write-Host ("  DIAG kmd: " + $_.FullName) }
+          Write-Host "DIAG search whole drive for *WindowsDriver* :"
+          Get-ChildItem -Path "$drive\" -Recurse -Filter *WindowsDriver* -ErrorAction SilentlyContinue | Select-Object -First 40 | ForEach-Object { Write-Host ("  DIAG wd: " + $_.FullName) }
+          Write-Host "===== DIAG END ====="
+
           # 重要：vcxproj 第 30 行是 $(VCTargetsPath)\Microsoft.Cpp.Default.props，
           # 即调用方自己补了“\”，所以 VCTargetsPath MUST 不带结尾反斜杠（否则变成 v180\\\... → MSB4102）。
           $vcTargetsNoSlash = $vcTargets.TrimEnd('\')
