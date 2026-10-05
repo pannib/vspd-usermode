@@ -210,23 +210,11 @@ jobs:
           $vcTargets = $wk
           Write-Host "VCTargetsPath repointed to writable copy: $vcTargets"
 
-          # 5) 补丁：标准 VCTargetsPath 以反斜杠结尾，但部分 props（如 Microsoft.Cpp.ToolsetLocation.props(106)
-          #    用 “$(VCTargetsPath)Platforms\...” 直接拼接、未自补反斜杠。我们传入的 VCTargetsPath 不带结尾斜杠，
-          #    导致路径退化为 “vc180Platforms\...”（缺斜杠 → MSB4019）。在可写副本里把所有
-          #    “$(VCTargetsPath)Platforms” 统一改成 “$(VCTargetsPath)\Platforms”（语义等价于标准结尾斜杠行为）。
-          $patched = 0
-          Get-ChildItem -Path $wk -Recurse -Include *.props,*.targets -ErrorAction SilentlyContinue | ForEach-Object {
-            $c = Get-Content $_.FullName -Raw
-            if ($c -match '\$\(VCTargetsPath\)Platforms') {
-              $c = $c -replace '\$\(VCTargetsPath\)Platforms', '$(VCTargetsPath)\Platforms'
-              Set-Content -Path $_.FullName -Value $c -Encoding UTF8
-              $patched++
-            }
-          }
-          Write-Host "Patched $patched props/targets files for missing VCTargetsPath trailing slash"
-
-          # 重要：vcxproj 第 30 行是 $(VCTargetsPath)\Microsoft.Cpp.Default.props，
-          # 即调用方自己补了“\”，所以 VCTargetsPath MUST 不带结尾反斜杠（否则变成 v180\\\... → MSB4102）。
+          # 说明：VCTargetsPath 必须“带”结尾反斜杠（部分 props 如 ToolsetLocation.props 用
+          # “$(VCTargetsPath)Platforms” 直接拼接、不补斜杠）。vcxproj 自补的
+          # “$(VCTargetsPath)\Microsoft.Cpp.Default.props” 会变成双反斜杠，Windows 容忍。
+          # $vcTargetsNoSlash 仅用于下面 PowerShell 侧拼接路径（Join-Path 自带分隔符），
+          # msbuild 实际使用的带斜杠值由命令行 /p:VCTargetsPath=... 提供。
           $vcTargetsNoSlash = $vcTargets.TrimEnd('\')
 
           # DIAG：确认最终 VCTargetsPath 下 x64 工具集目录存在、且含 wrapper（定位 MSB8020 是否因副本漏拷/平台不符）
@@ -304,8 +292,6 @@ jobs:
             "/p:_Platform=x64",
             "/p:_ToolsetFound=true",
             "/p:PlatformToolset=WindowsKernelModeDriver10.0",
-            "/p:VCTargetsPath=$vcTargetsNoSlash",
-            "/p:CurrentVCTargetsPath=$vcTargetsNoSlash",
             "/p:TargetVersion=Windows10",
             "/v:normal"
           )
@@ -320,7 +306,11 @@ jobs:
           Write-Host "Building driver inside EWDK environment ..."
           # call LaunchBuildEnv 继承 INCLUDE/LIB/PATH（编译器/链接器要用），随后用 set 覆盖 4 个路径变量，
           # 最后 msbuild 全路径 + /noautoresponse + @rsp 编译。
-          $msbCmd = ('call "{0}" && cd /d "{1}" && set "VSINSTALLDIR={2}" && set "VCTargetsPath={3}" && set "CurrentVCTargetsPath={3}" && set "WDKContentRoot={4}" && set "WindowsSdkDir={5}" && "{6}" /noautoresponse @vspd_build.rsp VSPD\Vspd.Driver\vspd.vcxproj' `
+          # VCTargetsPath / CurrentVCTargetsPath 必须带结尾反斜杠（部分 props 如 ToolsetLocation.props
+          # 用 “$(VCTargetsPath)Platforms” 直接拼接、不补斜杠）。这两个值无空格，作为 /p: 全局属性
+          # 直接放到命令行（不在 rsp：rsp 行尾反斜杠会被当续行符；命令行里反斜杠后跟空格则安全，不会转义引号）。
+          # 末尾的空格确保 “\” 后不是引号，避免 cmd 转义。
+          $msbCmd = ('call "{0}" && cd /d "{1}" && set "VSINSTALLDIR={2}" && set "VCTargetsPath={3}" && set "CurrentVCTargetsPath={3}" && set "WDKContentRoot={4}" && set "WindowsSdkDir={5}" && "{6}" /noautoresponse /p:VCTargetsPath={3}\ /p:CurrentVCTargetsPath={3}\ @vspd_build.rsp VSPD\Vspd.Driver\vspd.vcxproj' `
                      -f $bat, $workspace, $vsInstall, $vcTargetsNoSlash, $wdkContent, $sdkDir, $msb.FullName)
           Write-Host "MSBUILD CMD: $msbCmd"
           & cmd /c $msbCmd
