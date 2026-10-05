@@ -271,11 +271,21 @@ jobs:
           # _ToolsetFound 恒为 false → MSB8020。
           # 解决：显式把 _Platform=x64（让工具集导入路径正确解析）与 _ToolsetFound=true
           # （兜底通过 MSB8020 判定）作为全局属性传入；两者均为无空格简单值，适合放进 rsp。
+          # 关键修复（MSB4019 / VCTargetsPath 被 props 链重置）：
+          # 该版 EWDK 的 Microsoft.Cpp.Default.props 会“重新推导” VCTargetsPath（甚至 CurrentVCTargetsPath）
+          # 成一个缺盘符的相对路径，从而把 $(VCTargetsPath)\Microsoft.Cpp.Platform.props 解析成
+          #   \Microsoft.Cpp.Platform.props → D:\Microsoft.Cpp.Platform.props （找不到 → MSB4019）。
+          # 之前用 `set "VCTargetsPath=..."` 环境变量传入，但 props 链会把它覆盖掉。
+          # 解决：把 VCTargetsPath / CurrentVCTargetsPath 作为 /p: 全局属性写进 rsp——
+          # 全局属性无法被任何 <PropertyGroup> 覆盖，从而锁死正确路径。
+          # 这两个值均无空格（D:\a\_temp\vc180），可直接安全放入 rsp。
           $rspLines = @(
             "/p:Configuration=Release",
             "/p:Platform=x64",
             "/p:_Platform=x64",
             "/p:_ToolsetFound=true",
+            "/p:VCTargetsPath=$vcTargetsNoSlash",
+            "/p:CurrentVCTargetsPath=$vcTargetsNoSlash",
             "/p:TargetVersion=Windows10",
             "/v:normal"
           )
