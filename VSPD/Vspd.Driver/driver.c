@@ -176,7 +176,7 @@ VOID VspdEvtChildListCreateDevice(
 
     // 子设备硬件 ID，INF 据此匹配 VSPD\VPORT 并加载同一驱动（Class=Ports）
     DECLARE_CONST_UNICODE_STRING(hwId, L"VSPD\\VPORT");
-    WdfPdoInitAddHardwareId(DeviceInit, &hwId);
+    WdfPdoInitAddHardwareID(DeviceInit, &hwId);   // 注意：KMDF 正确函数名是 ...AddHardwareID（大写 ID）
     WdfDeviceInitSetIoType(DeviceInit, WdfDeviceIoBuffered);
 
     WDF_OBJECT_ATTRIBUTES attrs;
@@ -200,14 +200,10 @@ VOID VspdEvtChildListCreateDevice(
     // COMPORT 设备接口（串口程序枚举用）
     WdfDeviceCreateDeviceInterface(hChild, &GUID_VSPD_COMPORT, NULL);
 
-    // 端口名 + 友好名（设备管理器“端口”下显示）
-    WCHAR nameBuf[32];
-    UNICODE_STRING name;
-    RtlInitEmptyUnicodeString(&name, nameBuf, sizeof(nameBuf));
-    RtlUnicodeStringPrintf(&name, L"COM%u", cid->ComPort);
-    WdfDeviceAssignProperty(hChild, &DEVPKEY_Device_PortName, DEVPROP_TYPE_STRING,
-                            (ULONG)((wcslen(nameBuf) + 1) * sizeof(WCHAR)), nameBuf);
-
+    // 友好名（显示在设备管理器“端口(COM 和 LPT)”下）。
+    // 注：Windows 并没有 DEVPKEY_Device_PortName 这个属性键（已核实 devpkey.h 中不存在）；
+    //     串口的 PortName 是设备硬件键下的 REG_SZ 注册表值，由 Ports 类安装程序/串口驱动维护。
+    //     本驱动已通过 \DosDevices\COMx 符号链接 + COMPORT 设备接口提供可用串口，显示名用 FriendlyName 即可。
     WCHAR friendlyBuf[64];
     UNICODE_STRING friendly;
     RtlInitEmptyUnicodeString(&friendly, friendlyBuf, sizeof(friendlyBuf));
@@ -310,7 +306,12 @@ VOID VspdEvtPortWrite(WDFQUEUE Queue, WDFREQUEST Request, size_t Length)
 
 VOID VspdEvtRequestCancel(WDFREQUEST Request)
 {
-    PPORT_CTX pc = PortGetCtx(WdfRequestGetDevice(Request));
+    // 取消例程只有 WDFREQUEST：官方取“请求所属设备”的写法是
+    //   WdfIoQueueGetDevice(WdfRequestGetIoQueue(Request))
+    // 若请求由驱动自建或已完成，WdfRequestGetIoQueue 返回 NULL，需判空。
+    WDFQUEUE q = WdfRequestGetIoQueue(Request);
+    if (q == NULL) { WdfRequestComplete(Request, STATUS_CANCELLED); return; }
+    PPORT_CTX pc = PortGetCtx(WdfIoQueueGetDevice(q));
     VSPD_BRIDGE* b = (pc->PairId < VSPD_MAX_PAIRS) ? g_Bridges[pc->PairId] : NULL;
     if (b) {
         WdfWaitLockAcquire(b->Lock, NULL);
