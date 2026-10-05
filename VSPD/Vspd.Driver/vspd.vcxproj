@@ -37,6 +37,19 @@
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
 
+  <!-- 显式设定输出路径：本工程没有 .sln，Microsoft.Cpp.props 依赖 $(SolutionDir) 推导出的
+       BaseOutputPath/OutputPath/OutDir 在无解决方案时为空/无效，导致
+       _CheckForInvalidConfigurationAndPlatform 报“BaseOutputPath/OutputPath not set”。
+       这里用 $(ProjectDir) 显式给出，保证独立 msbuild 也能正确产出 vspd.sys。 -->
+  <PropertyGroup>
+    <BaseOutputPath>$(ProjectDir)$(Configuration)\$(Platform)\</BaseOutputPath>
+    <OutputPath>$(Configuration)\$(Platform)\</OutputPath>
+    <OutDir>$(ProjectDir)$(Configuration)\$(Platform)\</OutDir>
+    <IntDir>$(ProjectDir)$(Configuration)\$(Platform)\</IntDir>
+    <TargetName>vspd</TargetName>
+    <TargetExt>.sys</TargetExt>
+  </PropertyGroup>
+
   <!-- 内核驱动工具集：自动导入 WDK 的 props/targets，使 ntoskrnl/serial 等头库可用 -->
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
